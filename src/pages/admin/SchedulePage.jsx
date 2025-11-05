@@ -2538,6 +2538,7 @@ const SchedulePage = () => {
           <TrainerMatrixView
             trainers={activeTrainers}
             scheduleData={scheduleData}
+            flattenedScheduleData={flattenedScheduleData}
             setScheduleData={setScheduleData}
             currentYear={currentYear}
             currentMonth={currentMonth}

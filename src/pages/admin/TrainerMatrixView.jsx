@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Filter, Search, X as CloseIcon, Trash2, CheckSquare, Square, Calendar, User, AlertTriangle } from 'lucide-react';
 import { saveScheduleData } from '../../utils/firestoreSchedule';
@@ -27,11 +27,11 @@ function parseLocalDate(dateStr) {
   return new Date(year, month - 1, day); // Month is 0-indexed
 }
 
-function getEntriesForDay(trainer, day, scheduleData, currentYear, currentMonth, matrixFilters) {
+function getEntriesForDay(trainer, day, flattenedScheduleData, currentYear, currentMonth, matrixFilters) {
   const dateStr = `${currentYear}-${pad2(currentMonth + 1)}-${pad2(day)}`;
   const currentDate = parseLocalDate(dateStr);
 
-  const allEntries = Object.values(scheduleData).flat();
+  const allEntries = flattenedScheduleData;
 
   return allEntries.filter(entry => {
     // 1. Trainer Name Match
@@ -199,9 +199,10 @@ const Tooltip = ({ children, content }) => {
   );
 };
 
-const TrainerMatrixView = ({
+const TrainerMatrixView = React.memo(({
   trainers,
   scheduleData,
+  flattenedScheduleData = [], // Add memoized flattened data with default
   setScheduleData,
   currentYear,
   currentMonth,
@@ -412,14 +413,26 @@ const TrainerMatrixView = ({
     return currentTrainers;
   }, [trainers, matrixFilters, matrixSearchTerm, isMultiSelectMode, selectedTrainers, scheduleData, currentYear, currentMonth]);
 
-  // Helper for daily section search/filter
-  const matchesDailySearch = (entryOrTrainer) => {
+  // Memoize hasActiveFilters check
+  const hasActiveFilters = useMemo(() => {
+    return matrixFilters.specialization.length > 0 ||
+      matrixFilters.client.length > 0 ||
+      matrixFilters.course.length > 0 ||
+      matrixFilters.nonTrainingTaskTypes.length > 0 ||
+      matrixFilters.type !== 'all' ||
+      matrixFilters.role !== 'all' ||
+      (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') ||
+      (matrixFilters.endDate && matrixFilters.endDate.trim() !== '');
+  }, [matrixFilters]);
+
+  // Helper for daily section search/filter - memoized with useCallback
+  const matchesDailySearch = useCallback((entryOrTrainer) => {
     const searchTermLower = dailySearchTerm.toLowerCase();
     if (searchTermLower === '') return true;
 
     // If no filter fields are selected, search in all fields
-    const hasActiveFilters = Object.values(dailyFilterFields).some(field => field);
-    if (!hasActiveFilters) {
+    const hasActiveDailyFilters = Object.values(dailyFilterFields).some(field => field);
+    if (!hasActiveDailyFilters) {
       const allFields = [
         entryOrTrainer.trainer || entryOrTrainer.name || '',
         entryOrTrainer.client || '',
@@ -445,7 +458,7 @@ const TrainerMatrixView = ({
     if (dailyFilterFields.specialization) fields.push(entryOrTrainer.specialization || entryOrTrainer.skill || '');
 
     return fields.some(f => f && f.toLowerCase().includes(searchTermLower));
-  };
+  }, [dailySearchTerm, dailyFilterFields]);
 
   // Multi-select search helper functions
   const handleSearchChange = (searchTerm) => {
@@ -494,17 +507,140 @@ const TrainerMatrixView = ({
     }
   };
 
-  // getTrainerCategories function for the three detailed sections
-  const getTrainerCategories = (day) => {
+  // Pre-index entries by date and trainer for O(1) lookup instead of O(n) filtering
+  // MUST be defined before trainerCategoriesMemo which uses it
+  const entriesByDateAndTrainer = useMemo(() => {
+    const index = new Map();
+    const dateStr = `${currentYear}-${pad2(currentMonth + 1)}`;
+    const currentMonthStart = new Date(currentYear, currentMonth, 1);
+    const currentMonthEnd = new Date(currentYear, currentMonth + 1, 0);
+    
+    flattenedScheduleData.forEach(entry => {
+      // Only process entries that might be in the current month
+      const entryStartDate = parseLocalDate(entry.startDate);
+      const entryEndDate = parseLocalDate(entry.endDate);
+      
+      // Skip if entry doesn't overlap with current month at all
+      if (entryEndDate < currentMonthStart || entryStartDate > currentMonthEnd) {
+        return;
+      }
+      
+      // Calculate the range of days in current month that this entry covers
+      const startDay = entryStartDate < currentMonthStart ? 1 : entryStartDate.getDate();
+      const endDay = entryEndDate > currentMonthEnd ? daysInMonth : entryEndDate.getDate();
+      const entryMonth = entryStartDate.getMonth();
+      const entryYear = entryStartDate.getFullYear();
+      
+      // Only process if entry is in current month (or spans into it)
+      if (entryMonth === currentMonth && entryYear === currentYear) {
+        // For each day in the entry's range that falls in current month
+        for (let d = startDay; d <= endDay; d++) {
+          const dayDateStr = `${dateStr}-${pad2(d)}`;
+          const trainerKey = `${dayDateStr}-${entry.trainer}`;
+          
+          if (!index.has(trainerKey)) {
+            index.set(trainerKey, []);
+          }
+          index.get(trainerKey).push(entry);
+        }
+      } else if (entryStartDate < currentMonthStart && entryEndDate >= currentMonthStart) {
+        // Entry spans from previous month into current month
+        for (let d = 1; d <= Math.min(endDay, daysInMonth); d++) {
+          const dayDateStr = `${dateStr}-${pad2(d)}`;
+          const trainerKey = `${dayDateStr}-${entry.trainer}`;
+          
+          if (!index.has(trainerKey)) {
+            index.set(trainerKey, []);
+          }
+          index.get(trainerKey).push(entry);
+        }
+      } else if (entryStartDate <= currentMonthEnd && entryEndDate > currentMonthEnd) {
+        // Entry spans from current month into next month
+        for (let d = Math.max(1, startDay); d <= daysInMonth; d++) {
+          const dayDateStr = `${dateStr}-${pad2(d)}`;
+          const trainerKey = `${dayDateStr}-${entry.trainer}`;
+          
+          if (!index.has(trainerKey)) {
+            index.set(trainerKey, []);
+          }
+          index.get(trainerKey).push(entry);
+        }
+      }
+    });
+    
+    return index;
+  }, [flattenedScheduleData, currentYear, currentMonth, daysInMonth]);
+
+  // Memoize getTrainerCategories to prevent expensive recalculations
+  const trainerCategoriesMemo = useMemo(() => {
+    if (!selectedDay) return null;
+    
     let trainingTrainers = [];
     let nonTrainingTrainers = [];
     const assignedTrainersNames = new Set();
+    const dateStr = `${currentYear}-${pad2(currentMonth + 1)}`;
+    const dayDateStr = `${dateStr}-${pad2(selectedDay)}`;
 
     // Iterate over `filteredTrainers` (trainers passing overall specialization filter)
     filteredTrainers.forEach(trainer => {
-      // Get all entries for this specific trainer on the selected day,
-      // and ensure these entries also pass the matrixFilters (client, course, type, role, date range)
-      const entriesForThisTrainerOnSelectedDay = getEntriesForDay(trainer, day, scheduleData, currentYear, currentMonth, matrixFilters);
+      // Get entries from pre-indexed map (much faster than filtering)
+      const trainerKey = `${dayDateStr}-${trainer.name}`;
+      const rawEntries = entriesByDateAndTrainer.get(trainerKey) || [];
+      
+      // Apply filters (much smaller set now)
+      const entriesForThisTrainerOnSelectedDay = rawEntries.filter(entry => {
+        // Skip "Not Alloted" entries
+        if (entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted') {
+          return false;
+        }
+
+        // Apply matrix filters
+        if (matrixFilters.client.length > 0) {
+          if (!entry.client || !matrixFilters.client.includes(entry.client)) {
+            return false;
+          }
+        }
+
+        if (matrixFilters.course.length > 0) {
+          if (!entry.course || !matrixFilters.course.includes(entry.course)) {
+            return false;
+          }
+        }
+
+        if (matrixFilters.type === 'training' && entry.type !== 'training') {
+          return false;
+        }
+        if (matrixFilters.type === 'non-training' && entry.type !== 'non-training') {
+          return false;
+        }
+        if (matrixFilters.type === 'available') {
+          return false;
+        }
+
+        if (matrixFilters.role !== 'all' && entry.type === 'training') {
+          if (!entry.role || entry.role !== matrixFilters.role) {
+            return false;
+          }
+        }
+
+        if (matrixFilters.nonTrainingTaskTypes && matrixFilters.nonTrainingTaskTypes.length > 0 && entry.type === 'non-training') {
+          if (!entry.taskType || !matrixFilters.nonTrainingTaskTypes.includes(entry.taskType)) {
+            return false;
+          }
+        }
+
+        const currentDate = parseLocalDate(dayDateStr);
+        if (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') {
+          const filterStartDate = parseLocalDate(matrixFilters.startDate);
+          if (currentDate < filterStartDate) return false;
+        }
+        if (matrixFilters.endDate && matrixFilters.endDate.trim() !== '') {
+          const filterEndDate = parseLocalDate(matrixFilters.endDate);
+          if (currentDate > filterEndDate) return false;
+        }
+
+        return true;
+      });
 
       entriesForThisTrainerOnSelectedDay.forEach(entry => {
         if (entry.type === 'training') {
@@ -527,7 +663,7 @@ const TrainerMatrixView = ({
       if (assignedTrainersNames.has(trainer.name)) return false;
 
       // Check if any filters are applied (excluding specialization which is handled in filteredTrainers)
-      const hasActiveFilters = 
+      const hasActiveFiltersForAvailable = 
         matrixFilters.client.length > 0 ||
         matrixFilters.course.length > 0 ||
         matrixFilters.type !== 'all' ||
@@ -537,7 +673,7 @@ const TrainerMatrixView = ({
         (matrixFilters.endDate && matrixFilters.endDate.trim() !== '');
 
       // If no filters are applied, show all available trainers
-      if (!hasActiveFilters) {
+      if (!hasActiveFiltersForAvailable) {
         return matchesDailySearch(trainer);
       }
 
@@ -605,7 +741,115 @@ const TrainerMatrixView = ({
       nonTrainingTrainers,
       availableTrainers
     };
-  };
+  }, [selectedDay, filteredTrainers, entriesByDateAndTrainer, currentYear, currentMonth, matrixFilters, matchesDailySearch, dailyFilterType, scheduleData, daysInMonth]);
+
+  // getTrainerCategories function wrapper for backward compatibility
+  const getTrainerCategories = useCallback((day) => {
+    if (day !== selectedDay) {
+      // For non-selected days, calculate on the fly (shouldn't happen in normal flow)
+      return {
+        trainingTrainers: [],
+        nonTrainingTrainers: [],
+        availableTrainers: []
+      };
+    }
+    return trainerCategoriesMemo || {
+      trainingTrainers: [],
+      nonTrainingTrainers: [],
+      availableTrainers: []
+    };
+  }, [selectedDay, trainerCategoriesMemo]);
+
+  // Memoize cell data to avoid recalculating for every cell on every render
+  const cellDataMap = useMemo(() => {
+    const map = new Map();
+    const dateStr = `${currentYear}-${pad2(currentMonth + 1)}`;
+    
+    filteredTrainers.forEach(trainer => {
+      daysArray.forEach(day => {
+        const key = `${trainer.id}-${day}`;
+        const dayDateStr = `${dateStr}-${pad2(day)}`;
+        const trainerKey = `${dayDateStr}-${trainer.name}`;
+        
+        // Get entries from pre-indexed map (O(1) lookup)
+        const rawEntries = entriesByDateAndTrainer.get(trainerKey) || [];
+        
+        // Apply filters (much smaller set now)
+        const entries = rawEntries.filter(entry => {
+          // Skip "Not Alloted" entries
+          if (entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted') {
+            return false;
+          }
+
+          // Apply matrix filters
+          // Client Filter
+          if (matrixFilters.client.length > 0) {
+            if (!entry.client || !matrixFilters.client.includes(entry.client)) {
+              return false;
+            }
+          }
+
+          // Course Filter
+          if (matrixFilters.course.length > 0) {
+            if (!entry.course || !matrixFilters.course.includes(entry.course)) {
+              return false;
+            }
+          }
+
+          // Type Filter
+          if (matrixFilters.type === 'training' && entry.type !== 'training') {
+            return false;
+          }
+          if (matrixFilters.type === 'non-training' && entry.type !== 'non-training') {
+            return false;
+          }
+          if (matrixFilters.type === 'available') {
+            return false;
+          }
+
+          // Role Filter
+          if (matrixFilters.role !== 'all' && entry.type === 'training') {
+            if (!entry.role || entry.role !== matrixFilters.role) {
+              return false;
+            }
+          }
+
+          // Non-Training Task Type Filter
+          if (matrixFilters.nonTrainingTaskTypes && matrixFilters.nonTrainingTaskTypes.length > 0 && entry.type === 'non-training') {
+            if (!entry.taskType || !matrixFilters.nonTrainingTaskTypes.includes(entry.taskType)) {
+              return false;
+            }
+          }
+
+          // Date range filter
+          const currentDate = parseLocalDate(dayDateStr);
+          if (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') {
+            const filterStartDate = parseLocalDate(matrixFilters.startDate);
+            if (currentDate < filterStartDate) return false;
+          }
+          if (matrixFilters.endDate && matrixFilters.endDate.trim() !== '') {
+            const filterEndDate = parseLocalDate(matrixFilters.endDate);
+            if (currentDate > filterEndDate) return false;
+          }
+
+          return true;
+        });
+        
+        map.set(key, {
+          entries,
+          status: getStatusForEntries(entries),
+          hasEntries: entries.length > 0,
+          tooltipContent: entries.length === 0
+            ? 'No Task Assigned'
+            : (entries[0].type === 'training'
+                ? `🎓 Training Session\n${entries[0].client ? '👥 Client: ' + entries[0].client + '\n' : ''}${entries[0].course ? '📚 Course: ' + entries[0].course + '\n' : ''}${entries[0].role ? '👤 Role: ' + entries[0].role : ''}`
+                : `📋 Non-Training Task\n${entries[0].taskDetails ? '📝 Task: ' + entries[0].taskDetails + '\n' : ''}${entries[0].taskType ? '🏷️ Type: ' + entries[0].taskType + '\n' : ''}${entries[0].description ? '📄 Description: ' + entries[0].description : ''}`
+              )
+        });
+      });
+    });
+    return map;
+  }, [filteredTrainers, daysArray, entriesByDateAndTrainer, currentYear, currentMonth, matrixFilters]);
 
   const handleScheduleTask = (trainer) => {
     if (onScheduleTask) {
@@ -643,16 +887,13 @@ const TrainerMatrixView = ({
         // Select all cells for this trainer (only if they have entries)
         trainerCells.forEach(cellKey => {
           const [year, month, tId, day] = cellKey.split('-');
-          const entries = getEntriesForDay(
-            filteredTrainers.find(t => t.id === tId), 
-            parseInt(day), 
-            scheduleData, 
-            parseInt(year), 
-            parseInt(month), 
-            matrixFilters
-          );
-          if (entries.length > 0) {
-            newSelected.add(cellKey);
+          const trainer = filteredTrainers.find(t => t.id === tId);
+          if (trainer) {
+            const cellKeyForMap = `${trainer.id}-${parseInt(day)}`;
+            const cellData = cellDataMap.get(cellKeyForMap);
+            if (cellData && cellData.hasEntries) {
+              newSelected.add(cellKey);
+            }
           }
         });
       }
@@ -674,16 +915,12 @@ const TrainerMatrixView = ({
         dateCells.forEach(cellKey => {
           const [year, month, tId, day] = cellKey.split('-');
           const trainer = filteredTrainers.find(t => t.id === tId);
-          const entries = getEntriesForDay(
-            trainer, 
-            parseInt(day), 
-            scheduleData, 
-            parseInt(year), 
-            parseInt(month), 
-            matrixFilters
-          );
-          if (entries.length > 0) {
-            newSelected.add(cellKey);
+          if (trainer) {
+            const cellKeyForMap = `${trainer.id}-${parseInt(day)}`;
+            const cellData = cellDataMap.get(cellKeyForMap);
+            if (cellData && cellData.hasEntries) {
+              newSelected.add(cellKey);
+            }
           }
         });
       }
@@ -704,8 +941,10 @@ const TrainerMatrixView = ({
       if (newScheduleData[date]) {
         const trainer = filteredTrainers.find(t => t.id === trainerId);
         if (trainer) {
-          // Get entries for this trainer on this specific date
-          const entriesForTrainer = getEntriesForDay(trainer, parseInt(day), scheduleData, parseInt(year), parseInt(month), matrixFilters);
+          // Get entries for this trainer on this specific date using cached cell data
+          const cellKeyForMap = `${trainer.id}-${parseInt(day)}`;
+          const cellData = cellDataMap.get(cellKeyForMap);
+          const entriesForTrainer = cellData ? cellData.entries : [];
           
           // Remove all entries that match the trainer and have entries on this date
           const originalLength = newScheduleData[date].length;
@@ -769,19 +1008,19 @@ const TrainerMatrixView = ({
 
   const uniqueDailyClients = useMemo(() => {
     const clients = new Set();
-    Object.values(scheduleData).flat().forEach(entry => {
+    flattenedScheduleData.forEach(entry => {
       if (entry.client && entry.client !== 'Not Alloted') clients.add(entry.client);
     });
     return Array.from(clients);
-  }, [scheduleData]);
+  }, [flattenedScheduleData]);
 
   const uniqueDailyCourses = useMemo(() => {
     const courses = new Set();
-    Object.values(scheduleData).flat().forEach(entry => {
+    flattenedScheduleData.forEach(entry => {
       if (entry.course && entry.course !== 'Not Alloted') courses.add(entry.course);
     });
     return Array.from(courses);
-  }, [scheduleData]);
+  }, [flattenedScheduleData]);
 
   // Calculate responsive grid columns based on screen size and compact view
 
@@ -963,39 +1202,11 @@ const TrainerMatrixView = ({
           <Button 
             onClick={() => setIsMatrixFilterModalOpen(true)} 
             variant="outline"
-            className={`flex items-center gap-2 ${(() => {
-              let hasActiveFilters = false;
-              // Check array-based filters
-              hasActiveFilters = hasActiveFilters || matrixFilters.specialization.length > 0;
-              hasActiveFilters = hasActiveFilters || matrixFilters.client.length > 0;
-              hasActiveFilters = hasActiveFilters || matrixFilters.course.length > 0;
-              hasActiveFilters = hasActiveFilters || matrixFilters.nonTrainingTaskTypes.length > 0;
-              // Check radio button filters
-              hasActiveFilters = hasActiveFilters || matrixFilters.type !== 'all';
-              hasActiveFilters = hasActiveFilters || matrixFilters.role !== 'all';
-              // Check date filters
-              hasActiveFilters = hasActiveFilters || (matrixFilters.startDate && matrixFilters.startDate.trim() !== '');
-              hasActiveFilters = hasActiveFilters || (matrixFilters.endDate && matrixFilters.endDate.trim() !== '');
-              return hasActiveFilters;
-            })() ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-50' : ''}`}
+            className={`flex items-center gap-2 ${hasActiveFilters ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-50' : ''}`}
           >
             <Filter className="h-4 w-4" /> 
             Filters
-            {(() => {
-              let hasActiveFilters = false;
-              // Check array-based filters
-              hasActiveFilters = hasActiveFilters || matrixFilters.specialization.length > 0;
-              hasActiveFilters = hasActiveFilters || matrixFilters.client.length > 0;
-              hasActiveFilters = hasActiveFilters || matrixFilters.nonTrainingTaskTypes.length > 0;
-              hasActiveFilters = hasActiveFilters || matrixFilters.course.length > 0;
-              // Check radio button filters
-              hasActiveFilters = hasActiveFilters || matrixFilters.type !== 'all';
-              hasActiveFilters = hasActiveFilters || matrixFilters.role !== 'all';
-              // Check date filters
-              hasActiveFilters = hasActiveFilters || (matrixFilters.endDate && matrixFilters.endDate.trim() !== '');
-              hasActiveFilters = hasActiveFilters || (matrixFilters.startDate && matrixFilters.startDate.trim() !== '');
-              return hasActiveFilters;
-            })() && (
+            {hasActiveFilters && (
               <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
             )}
           </Button>
@@ -1080,8 +1291,9 @@ const TrainerMatrixView = ({
                     const allCells = [];
                     filteredTrainers.forEach(trainer => {
                       daysArray.forEach(day => {
-                        const entries = getEntriesForDay(trainer, day, scheduleData, currentYear, currentMonth, matrixFilters);
-                        if (entries.length > 0) {
+                        const cellKey = `${trainer.id}-${day}`;
+                        const cellData = cellDataMap.get(cellKey);
+                        if (cellData && cellData.hasEntries) {
                           allCells.push(`${currentYear}-${currentMonth}-${trainer.id}-${day}`);
                         }
                       });
@@ -1107,8 +1319,9 @@ const TrainerMatrixView = ({
               const dateCells = filteredTrainers.map(trainer => `${currentYear}-${currentMonth}-${trainer.id}-${day}`);
               const allDateSelected = dateCells.every(cell => selectedCells.has(cell));
               const hasScheduledTasks = filteredTrainers.some(trainer => {
-                const entries = getEntriesForDay(trainer, day, scheduleData, currentYear, currentMonth, matrixFilters);
-                return entries.length > 0;
+                const cellKey = `${trainer.id}-${day}`;
+                const cellData = cellDataMap.get(cellKey);
+                return cellData && cellData.hasEntries;
               });
 
               // Get day abbreviation
@@ -1141,8 +1354,9 @@ const TrainerMatrixView = ({
             const trainerCells = daysArray.map(day => `${currentYear}-${currentMonth}-${trainer.id}-${day}`);
             const allTrainerSelected = trainerCells.every(cell => selectedCells.has(cell));
             const hasScheduledTasks = daysArray.some(day => {
-              const entries = getEntriesForDay(trainer, day, scheduleData, currentYear, currentMonth, matrixFilters);
-              return entries.length > 0;
+              const cellKey = `${trainer.id}-${day}`;
+              const cellData = cellDataMap.get(cellKey);
+              return cellData && cellData.hasEntries;
             });
             
             return (
@@ -1179,18 +1393,11 @@ const TrainerMatrixView = ({
                   )}
                 </div>
                 {daysArray.map(day => {
-                  const entries = getEntriesForDay(trainer, day, scheduleData, currentYear, currentMonth, matrixFilters);
-                  const status = getStatusForEntries(entries);
-                  const cellKey = `${currentYear}-${currentMonth}-${trainer.id}-${day}`;
-                  const isSelected = selectedCells.has(cellKey);
-                  const hasEntries = entries.length > 0;
-                  
-                  const tooltipContent = entries.length === 0
-                    ? 'No Task Assigned'
-                    : (entries[0].type === 'training'
-                        ? `🎓 Training Session\n${entries[0].client ? '👥 Client: ' + entries[0].client + '\n' : ''}${entries[0].course ? '📚 Course: ' + entries[0].course + '\n' : ''}${entries[0].role ? '👤 Role: ' + entries[0].role : ''}`
-                        : `📋 Non-Training Task\n${entries[0].taskDetails ? '📝 Task: ' + entries[0].taskDetails + '\n' : ''}${entries[0].taskType ? '🏷️ Type: ' + entries[0].taskType + '\n' : ''}${entries[0].description ? '📄 Description: ' + entries[0].description : ''}`
-                      );
+                  const cellKey = `${trainer.id}-${day}`;
+                  const cellData = cellDataMap.get(cellKey) || { entries: [], status: 'none', hasEntries: false, tooltipContent: 'No Task Assigned' };
+                  const { entries, status, hasEntries, tooltipContent } = cellData;
+                  const fullCellKey = `${currentYear}-${currentMonth}-${trainer.id}-${day}`;
+                  const isSelected = selectedCells.has(fullCellKey);
                       
                   return (
                     <div 
@@ -1478,10 +1685,10 @@ const TrainerMatrixView = ({
             </div>
           </div>
           {/* Bulk Delete Button and Select All for matrix view daily list */}
-          {(() => {
+          {trainerCategoriesMemo && (() => {
             const allTaskIds = [
-              ...getTrainerCategories(selectedDay).trainingTrainers.map(e => e.id),
-              ...getTrainerCategories(selectedDay).nonTrainingTrainers.map(e => e.id)
+              ...trainerCategoriesMemo.trainingTrainers.map(e => e.id),
+              ...trainerCategoriesMemo.nonTrainingTrainers.map(e => e.id)
             ];
             const allSelected = allTaskIds.length > 0 && allTaskIds.every(id => selectedTaskIds.includes(id));
             return (
@@ -1506,7 +1713,7 @@ const TrainerMatrixView = ({
             <div className="bg-white rounded-lg shadow p-4 border border-border/50">
               <h3 className="text-lg font-semibold mb-4 text-blue-600">Training Assigned Trainers</h3>
               <div className="space-y-3">
-                {getTrainerCategories(selectedDay).trainingTrainers.map((entry, index) => (
+                {trainerCategoriesMemo && trainerCategoriesMemo.trainingTrainers.map((entry, index) => (
                   <div key={index} className="bg-blue-50 p-3 rounded-lg flex justify-between items-center">
                     <div className="flex items-center gap-2">
                       <input
@@ -1527,7 +1734,7 @@ const TrainerMatrixView = ({
                     </div>
                   </div>
                 ))}
-                {getTrainerCategories(selectedDay).trainingTrainers.length === 0 && (
+                {(!trainerCategoriesMemo || trainerCategoriesMemo.trainingTrainers.length === 0) && (
                   <p className="text-gray-500 text-sm">No training assignments for this date</p>
                 )}
               </div>
@@ -1536,7 +1743,7 @@ const TrainerMatrixView = ({
             <div className="bg-white rounded-lg shadow p-4 border border-border/50">
               <h3 className="text-lg font-semibold mb-4 text-orange-600">Non-Training Task Allocated Trainers</h3>
               <div className="space-y-3">
-                {getTrainerCategories(selectedDay).nonTrainingTrainers.map((entry, index) => (
+                {trainerCategoriesMemo && trainerCategoriesMemo.nonTrainingTrainers.map((entry, index) => (
                   <div key={index} className="bg-orange-50 p-3 rounded-lg flex justify-between items-center">
                     <div className="flex items-center gap-2">
                       <input
@@ -1557,7 +1764,7 @@ const TrainerMatrixView = ({
                     </div>
                   </div>
                 ))}
-                {getTrainerCategories(selectedDay).nonTrainingTrainers.length === 0 && (
+                {(!trainerCategoriesMemo || trainerCategoriesMemo.nonTrainingTrainers.length === 0) && (
                   <p className="text-gray-500 text-sm">No non-training tasks for this date</p>
                 )}
               </div>
@@ -1566,7 +1773,7 @@ const TrainerMatrixView = ({
             <div className="bg-white rounded-lg shadow p-4 border border-border/50">
               <h3 className="text-lg font-semibold mb-4 text-green-600">Available Trainers</h3>
               <div className="space-y-3">
-                {getTrainerCategories(selectedDay).availableTrainers.map((trainer, index) => (
+                {trainerCategoriesMemo && trainerCategoriesMemo.availableTrainers.map((trainer, index) => (
                   <div key={index} className="bg-green-50 p-3 rounded-lg flex justify-between items-center">
                     <div>
                       <p className="font-medium">{trainer.name}</p>
@@ -1585,7 +1792,7 @@ const TrainerMatrixView = ({
                     </Button>
                   </div>
                 ))}
-                {getTrainerCategories(selectedDay).availableTrainers.length === 0 && (
+                {(!trainerCategoriesMemo || trainerCategoriesMemo.availableTrainers.length === 0) && (
                   <p className="text-gray-500 text-sm">No available trainers for this date</p>
                 )}
               </div>
@@ -1595,6 +1802,20 @@ const TrainerMatrixView = ({
       )}
     </div>
   );
-};
+}, (prevProps, nextProps) => {
+  // Custom comparison function to prevent unnecessary re-renders
+  return (
+    prevProps.trainers === nextProps.trainers &&
+    prevProps.scheduleData === nextProps.scheduleData &&
+    prevProps.flattenedScheduleData === nextProps.flattenedScheduleData &&
+    prevProps.currentYear === nextProps.currentYear &&
+    prevProps.currentMonth === nextProps.currentMonth &&
+    prevProps.selectedTaskIds === nextProps.selectedTaskIds &&
+    prevProps.sidebarCollapsed === nextProps.sidebarCollapsed &&
+    JSON.stringify(prevProps.matrixFilters) === JSON.stringify(nextProps.matrixFilters)
+  );
+});
+
+TrainerMatrixView.displayName = 'TrainerMatrixView';
 
 export default TrainerMatrixView; 
