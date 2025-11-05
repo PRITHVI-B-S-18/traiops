@@ -1,6 +1,8 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
+import ProtectedRoute from './components/common/ProtectedRoute';
+import SessionWarning from './components/common/SessionWarning';
 import LoginPage from './pages/LoginPage';
 import AdminDashboardLayout from './pages/admin/AdminDashboardLayout';
 import SchedulePage from './pages/admin/SchedulePage';
@@ -22,25 +24,36 @@ function AppContent() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         
-        {/* Admin routes */}
-          <Route path="/admin" element={<AdminDashboardLayout />}>
+        {/* Admin routes - Protected with admin role */}
+        <Route 
+          path="/admin" 
+          element={<ProtectedRoute allowedRoles={['admin']} />}
+        >
+          <Route element={<AdminDashboardLayout />}>
             <Route path="schedule" element={<SchedulePage />} />
             <Route path="trainers" element={<TrainerManagementPage />} />
             <Route path="profiles" element={<TrainerProfilesPage />} />
             <Route path="utilization" element={<TrainerUtilizationPage />} />
             <Route index element={<Navigate to="schedule" replace />} />
+          </Route>
         </Route>
 
-        {/* Trainer routes */}
-          <Route path="/trainer" element={<TrainerDashboardLayout />}>
+        {/* Trainer routes - Protected with trainer role */}
+        <Route 
+          path="/trainer" 
+          element={<ProtectedRoute allowedRoles={['trainer']} />}
+        >
+          <Route element={<TrainerDashboardLayout />}>
             <Route path="schedule" element={<TrainerSchedulePage />} />
             <Route path="profiles" element={<TrainerProfilesPage />} />
             <Route index element={<Navigate to="schedule" replace />} />
+          </Route>
         </Route>
         
         {/* Catch-all for 404 */}
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
+      <SessionWarning />
       <Toaster />
     </MotionConfig>
   );
