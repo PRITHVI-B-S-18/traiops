@@ -10,33 +10,33 @@ body {
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 0%;
+    --background: 0 0% 96%;  /* #F5F5F5 - Light grey background */
+    --foreground: 0 0% 17%;  /* #2C2C2C - Dark grey text */
 
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 0%;
+    --card: 0 0% 100%;  /* White cards */
+    --card-foreground: 0 0% 17%;  /* #2C2C2C */
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 0%;
+    --popover: 0 0% 100%;  /* White */
+    --popover-foreground: 0 0% 17%;  /* #2C2C2C */
 
-    --primary: 0 0% 0%;
-    --primary-foreground: 0 0% 100%;
+    --primary: 0 0% 35%;  /* #5A5A5A - Medium dark grey */
+    --primary-foreground: 0 0% 100%;  /* White text on primary */
 
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 0%;
+    --secondary: 0 0% 91%;  /* #E8E8E8 - Light grey */
+    --secondary-foreground: 0 0% 17%;  /* #2C2C2C */
 
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 45%;
+    --muted: 0 0% 94%;  /* #F0F0F0 - Very light grey */
+    --muted-foreground: 0 0% 53%;  /* #888888 - Medium grey */
 
-    --accent: 0 0% 96%;
-    --accent-foreground: 0 0% 0%;
+    --accent: 0 0% 91%;  /* #E8E8E8 */
+    --accent-foreground: 0 0% 17%;  /* #2C2C2C */
 
-    --destructive: 0 84% 60%;
+    --destructive: 0 84% 60%;  /* Keep red for errors */
     --destructive-foreground: 0 0% 100%;
 
-    --border: 0 0% 90%;
-    --input: 0 0% 90%;
-    --ring: 0 0% 0%;
+    --border: 0 0% 82%;  /* #D0D0D0 - Light grey border */
+    --input: 0 0% 82%;  /* #D0D0D0 */
+    --ring: 0 0% 44%;  /* #707070 - Medium grey ring */
 
     --radius: 0.5rem;
   }
@@ -243,19 +243,19 @@ body {
   /* Minimalistic sidebar styles */
   .sidebar-minimal {
     background: white;
-    border-right: 1px solid #e5e7eb;
+    border-right: 1px solid #E0E0E0;
     box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
   }
   
   .sidebar-toggle {
     background: white;
-    border: 1px solid #e5e7eb;
+    border: 1px solid #E0E0E0;
     box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
     transition: all 0.2s ease-in-out;
   }
   
   .sidebar-toggle:hover {
-    background: #f9fafb;
+    background: #F5F5F5;
     box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.1);
   }
   
