@@ -1,0 +1,752 @@
+import React, { useState, useEffect } from 'react';
+import { db } from '../../firebase';
+import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { PDFViewer, PDFDownloadLink, Document, Page, Image, View, Text, StyleSheet, Font } from '@react-pdf/renderer';
+import { parse, differenceInMonths } from 'date-fns';
+import page1 from '../../assets/page1.png';
+import page2 from '../../assets/page2.png';
+import page3 from '../../assets/page3.png';
+import footerImage from '../../assets/footer image.png';
+import logo from '../../assets/logo.png';
+
+Font.register({
+  family: 'Poppins',
+  src: '/fonts/Poppins/Poppins-Regular.ttf'
+});
+
+Font.register({
+  family: 'Poppins',
+  src: '/fonts/Poppins/Poppins-Bold.ttf',
+  fontWeight: 'bold',
+});
+
+Font.register({
+  family: 'Poppins',
+  src: '/fonts/Poppins/Poppins-SemiBold.ttf',
+  fontWeight: 'semibold',
+});
+
+Font.register({
+  family: 'Poppins',
+  src: '/fonts/Poppins/Poppins-ExtraBold.ttf',
+  fontWeight: 'extrabold',
+});
+
+Font.register({
+  family: 'Poppins',
+  src: '/fonts/Poppins/Poppins-Medium.ttf',
+  fontWeight: 'medium',
+});
+
+const getEmptyExperience = () => ({ role: '', organization: '', duration: '' });
+
+const getInitialForm = () => ({
+  name: '',
+  designation: '',
+  ugEducation: '',
+  pgEducation: '',
+  ugCollege: '',
+  ugStartYear: '',
+  ugEndYear: '',
+  pgCollege: '',
+  pgStartYear: '',
+  pgEndYear: '',
+  expertise: '',
+  experience: '',
+  experienceList: [getEmptyExperience()],
+  aboutTrainer: '',
+  showPhotoPlaceholder: true, // NEW FIELD
+});
+
+const calculateTotalExperience = (experienceList) => {
+  let totalMonths = 0;
+  const now = new Date();
+
+  experienceList.forEach(exp => {
+    if (exp.duration) {
+      console.log("Processing duration:", exp.duration);
+      // Use a regex to split, handling both hyphen-minus (-) and en dash (–)
+      const parts = exp.duration.split(/\s*[–-]+\s*/); 
+      if (parts.length === 2) {
+        const startPart = parts[0].trim();
+        let endPart = parts[1].trim();
+        console.log("  Parts: ", { startPart, endPart });
+
+        let startDate;
+        let endDate;
+
+        try {
+          // Parse start date, assuming format like 'MMMM YYYY' (e.g., 'July 2020')
+          startDate = parse(startPart, 'MMMM yyyy', new Date());
+
+          if (endPart.toLowerCase() === 'present') {
+            endDate = now;
+          } else {
+            // Parse end date
+            endDate = parse(endPart, 'MMMM yyyy', new Date());
+          }
+          console.log("  Parsed Dates: ", { startDate, endDate });
+
+          if (startDate && endDate && !isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+            const monthsDiff = differenceInMonths(endDate, startDate);
+            totalMonths += monthsDiff;
+            console.log("  Months added for this entry:", monthsDiff);
+          }
+        } catch (error) {
+          console.error("Error parsing date for experience duration:", exp.duration, error);
+          // Continue to next experience if parsing fails
+        }
+      }
+    }
+  });
+  console.log("Total months calculated:", totalMonths);
+
+  // Convert total months to years, rounded to one decimal place
+  return parseFloat((totalMonths / 12).toFixed(1));
+};
+
+const truncateText = (text, maxLength) => {
+  if (text.length > maxLength) {
+    return text.substring(0, maxLength) + '...';
+  }
+  return text;
+};
+
+// PDF styles
+const styles = StyleSheet.create({
+  page: { position: 'relative', width: '100%', height: '100%', fontFamily: 'Poppins' },
+  bgImage: { position: 'absolute', width: '100%', height: '100%', objectFit: 'cover' },
+  header: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fceeee', height: 120, paddingHorizontal: 40, paddingTop: 50 },
+  photoPlaceholder: { width: 80, height: 100, backgroundColor: '#fff', border: '1px solid #ccc', marginRight: 32 },
+  headerText: { flex: 1, flexDirection: 'column', justifyContent: 'center' },
+  heading: { fontSize: 26, fontWeight: 'extrabold', textAlign: 'left', marginBottom: 2, letterSpacing: 0.5, fontFamily: 'Poppins' },
+  subheading: { fontSize: 18, fontWeight: 'medium', textAlign: 'left', marginBottom: 8, color: '#444', fontFamily: 'Poppins' },
+  detailsSection: { marginTop: 40, paddingHorizontal: 40 },
+  detailsRow: { flexDirection: 'row', marginBottom: 8, alignItems: 'flex-start' },
+  detailsLabel: { fontWeight: 'bold', fontSize: 13, color: '#222', width: 160, textAlign: 'left', fontFamily: 'Poppins' },
+  colonSeparator: { fontSize: 13, color: '#222', width: 10, textAlign: 'center', fontFamily: 'Poppins' },
+  detailsValue: { fontSize: 13, color: '#222', flex: 1, paddingLeft: 5, fontFamily: 'Poppins' },
+  sectionHeader: { fontWeight: 'semibold', fontSize: 15, marginTop: 15, marginBottom: 5, color: '#222', letterSpacing: 0.2, paddingHorizontal: 40, fontFamily: 'Poppins' },
+  expList: { marginTop: 5, marginBottom: 8, paddingHorizontal: 40, paddingLeft: 58 },
+  expItem: { marginBottom: 2, fontSize: 13, fontFamily: 'Poppins' },
+  about: { marginTop: 10, fontSize: 12, lineHeight: 1.5, textAlign: 'justify', paddingHorizontal: 40, fontFamily: 'Poppins' },
+  thankYou: { position: 'absolute', top: '50%', left: 0, right: 0, textAlign: 'center', fontSize: 24, color: '#fff', transform: 'translateY(-50%)' },
+  footerImage: { position: 'absolute', width: '100%', height: 100, bottom: 0, left: 0, right: 0 },
+
+  // New styles for Experience List alignment
+  expItemRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+    alignItems: 'flex-start',
+  },
+  expRoleColumn: {
+    width: 160, // Match detailsLabel width for alignment
+    fontSize: 13,
+    fontWeight: 'bold',
+    fontFamily: 'Poppins',
+    textAlign: 'left',
+  },
+  expColonSeparator: {
+    fontSize: 13,
+    fontFamily: 'Poppins',
+    width: 10,
+    textAlign: 'center',
+  },
+  expDetailValue: {
+    flex: 1,
+    flexDirection: 'column', // Stack organization and duration
+    fontSize: 13,
+    color: '#222',
+    paddingLeft: 5, // Match detailsValue paddingLeft
+    fontFamily: 'Poppins',
+  },
+  expDurationIndented: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 2,
+    lineHeight: 1.2,
+  },
+  experienceContentContainer: {
+    marginTop: 0,
+    paddingHorizontal: 40,
+  },
+});
+
+const TrainerProfilePDF = ({ profile }) => (
+  <Document>
+    {/* Page 1: Cover */}
+    <Page size="A4" style={styles.page}>
+      <Image src={page1} style={styles.bgImage} />
+    </Page>
+    {/* Page 2: Profile Details with header and photo placeholder */}
+    <Page size="A4" style={{ ...styles.page, backgroundColor: '#fff' }}>
+      <View style={styles.header}>
+        {profile.showPhotoPlaceholder && <View style={styles.photoPlaceholder} />}
+        <View style={styles.headerText}>
+          <Text style={styles.heading}>{truncateText(profile.name, 25)}</Text>
+          <Text style={styles.subheading}>{profile.designation}</Text>
+        </View>
+      </View>
+      <View style={styles.detailsSection}>
+        <View style={styles.detailsRow}>
+          <Text style={styles.detailsLabel}>UG Education</Text>
+          <Text style={styles.colonSeparator}>:</Text>
+          <View style={styles.detailsValue}>
+            <Text>{profile.ugEducation}</Text>
+            {profile.ugCollege && profile.ugStartYear && profile.ugEndYear && (
+              <Text>{profile.ugCollege} ({profile.ugStartYear} - {profile.ugEndYear})</Text>
+            )}
+          </View>
+        </View>
+        {profile.pgEducation && profile.pgEducation.toUpperCase() !== 'NA' && (
+          <View style={styles.detailsRow}>
+            <Text style={styles.detailsLabel}>PG Education</Text>
+            <Text style={styles.colonSeparator}>:</Text>
+            <View style={styles.detailsValue}>
+              <Text>{profile.pgEducation}</Text>
+              {profile.pgCollege && profile.pgStartYear && profile.pgEndYear && (
+                <Text>{profile.pgCollege} ({profile.pgStartYear} - {profile.pgEndYear})</Text>
+              )}
+            </View>
+          </View>
+        )}
+        <View style={styles.detailsRow}>
+          <Text style={styles.detailsLabel}>Technical Expertise</Text>
+          <Text style={styles.colonSeparator}>:</Text>
+          <Text style={styles.detailsValue}>{profile.expertise}</Text>
+        </View>
+        <View style={styles.detailsRow}>
+          <Text style={styles.detailsLabel}>Experience</Text>
+          <Text style={styles.colonSeparator}>:</Text>
+          <Text style={styles.detailsValue}>{profile.experience} years</Text>
+        </View>
+      </View>
+      <Text style={styles.sectionHeader}>Experience List</Text>
+      <View style={styles.experienceContentContainer}>
+        {profile.experienceList && [...profile.experienceList].reverse().map((exp, i) => (
+          <View key={i} style={styles.expItemRow}>
+            <Text style={styles.expRoleColumn}>{exp.role}</Text>
+            <Text style={styles.expColonSeparator}>:</Text>
+            <View style={styles.expDetailValue}>
+              <Text>{exp.organization}</Text>
+              {exp.duration && <Text style={styles.expDurationIndented}>({exp.duration})</Text>}
+            </View>
+          </View>
+        ))}
+      </View>
+      <Text style={styles.sectionHeader}>About Trainer</Text>
+      <Text style={styles.about}>
+        {profile.aboutTrainer}
+      </Text>
+      <Image src={footerImage} style={styles.footerImage} />
+    </Page>
+    {/* Page 3: page3.png as background only */}
+    <Page size="A4" style={styles.page}>
+      <Image src={page3} style={styles.bgImage} />
+    </Page>
+  </Document>
+);
+
+const TrainerProfilesPage = () => {
+  const [form, setForm] = useState(getInitialForm());
+  const [profiles, setProfiles] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [message, setMessage] = useState('');
+  const [selectedTrainerId, setSelectedTrainerId] = useState('');
+  const [showPdfPreview, setShowPdfPreview] = useState(false);
+  const [originalFormState, setOriginalFormState] = useState(null);
+
+  useEffect(() => {
+    fetchProfiles();
+  }, []);
+
+  useEffect(() => {
+    if (message) {
+      const timer = setTimeout(() => setMessage(''), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [message]);
+
+  const fetchProfiles = async () => {
+    setLoading(true);
+    const querySnapshot = await getDocs(collection(db, 'trainer_profiles'));
+    setProfiles(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    setLoading(false);
+  };
+
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setForm({
+      ...form,
+      [name]: type === 'checkbox' ? checked : value,
+    });
+  };
+
+  const handleAddExperience = () => {
+    const updatedList = [...form.experienceList, getEmptyExperience()];
+    setForm({ 
+      ...form, 
+      experienceList: updatedList, 
+      experience: calculateTotalExperience(updatedList) 
+    });
+  };
+
+  const handleExperienceChange = (index, field, value) => {
+    const newExperienceList = [...form.experienceList];
+    newExperienceList[index] = { ...newExperienceList[index], [field]: value };
+    console.log('handleExperienceChange - newExperienceList:', newExperienceList);
+    setForm({ 
+      ...form, 
+      experienceList: newExperienceList, 
+      experience: calculateTotalExperience(newExperienceList) 
+    });
+  };
+
+  const handleRemoveExperience = (index) => {
+    const newExperienceList = form.experienceList.filter((_, i) => i !== index);
+    setForm({ 
+      ...form, 
+      experienceList: newExperienceList, 
+      experience: calculateTotalExperience(newExperienceList) 
+    });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    setLoading(true);
+    try {
+      if (editId) {
+        await updateDoc(doc(db, 'trainer_profiles', editId), form);
+        setMessage('Profile updated successfully!');
+      } else {
+        await addDoc(collection(db, 'trainer_profiles'), form);
+        setMessage('Profile added successfully!');
+      }
+      setForm(getInitialForm());
+      setShowForm(false);
+      setEditId(null);
+      fetchProfiles();
+    } catch (error) {
+      console.error("Error adding/updating document: ", error);
+      setMessage('Error saving profile.');
+    }
+    setLoading(false);
+  };
+
+  const handleEdit = (trainer) => {
+    setForm({ ...trainer, experienceList: trainer.experienceList || [] });
+    const deepCopiedExperienceList = JSON.parse(JSON.stringify(trainer.experienceList || []));
+    setOriginalFormState({ ...trainer, experienceList: deepCopiedExperienceList });
+    console.log('handleEdit - originalFormState.experienceList set to:', deepCopiedExperienceList);
+    setShowForm(true);
+    setEditId(trainer.id);
+    setShowPdfPreview(false);
+  };
+
+  const handleDelete = async (id) => {
+    if (window.confirm('Are you sure you want to delete this profile?')) {
+      setLoading(true);
+      try {
+        await deleteDoc(doc(db, 'trainer_profiles', id));
+        setMessage('Profile deleted successfully!');
+        fetchProfiles();
+      } catch (error) {
+        console.error("Error deleting document: ", error);
+        setMessage('Error deleting profile.');
+      }
+      setLoading(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setShowForm(false);
+    setEditId(null);
+    console.log('handleCancel - originalFormState before reset:', originalFormState);
+    setForm(originalFormState || getInitialForm());
+    setShowPdfPreview(false);
+  };
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto">
+      <h2 className="text-2xl font-bold text-gray-800 mb-6">Trainer Profiles</h2>
+
+      <div className="flex justify-between items-center mb-6">
+        <button
+          onClick={() => {
+            setShowForm(true);
+            setEditId(null);
+            setForm(getInitialForm());
+            setSelectedTrainerId('');
+          }}
+          className="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 transition duration-200 shadow-md"
+        >
+          Create Profile
+        </button>
+        <div className="flex items-center gap-4">
+          <label htmlFor="select-trainer" className="text-gray-700">Select Trainer</label>
+          <select
+            id="select-trainer"
+            className="border border-gray-300 rounded-md p-2 w-64 focus:ring-blue-500 focus:border-blue-500"
+            value={selectedTrainerId}
+            onChange={(e) => {
+              setSelectedTrainerId(e.target.value);
+              setShowForm(false);
+            }}
+          >
+            <option value="">-- Select Trainer --</option>
+            {profiles.map(trainer => (
+              <option key={trainer.id} value={trainer.id}>{trainer.name}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="bg-white p-6 rounded-lg shadow-lg mb-8">
+          <h3 className="text-xl font-semibold text-gray-800 mb-4">{editId ? 'Edit Trainer Profile' : 'Add New Trainer Profile'}</h3>
+          <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+              <input
+                type="text"
+                name="name"
+                value={form.name}
+                onChange={handleChange}
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Designation</label>
+              <input
+                type="text"
+                name="designation"
+                value={form.designation}
+                onChange={handleChange}
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">UG Education</label>
+              <input
+                type="text"
+                name="ugEducation"
+                value={form.ugEducation}
+                onChange={handleChange}
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">UG College</label>
+              <input
+                type="text"
+                name="ugCollege"
+                value={form.ugCollege}
+                onChange={handleChange}
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                required
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">UG Start Year</label>
+                <input
+                  type="text"
+                  name="ugStartYear"
+                  value={form.ugStartYear}
+                  onChange={handleChange}
+                  className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">UG End Year</label>
+                <input
+                  type="text"
+                  name="ugEndYear"
+                  value={form.ugEndYear}
+                  onChange={handleChange}
+                  className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                  required
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">PG Education (Optional)</label>
+              <input
+                type="text"
+                name="pgEducation"
+                value={form.pgEducation}
+                onChange={handleChange}
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Type NA if not applicable"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">PG College (Optional)</label>
+              <input
+                type="text"
+                name="pgCollege"
+                value={form.pgCollege}
+                onChange={handleChange}
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Type NA if not applicable"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">PG Start Year (Optional)</label>
+                <input
+                  type="text"
+                  name="pgStartYear"
+                  value={form.pgStartYear}
+                  onChange={handleChange}
+                  className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Type NA if not applicable"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">PG End Year (Optional)</label>
+                <input
+                  type="text"
+                  name="pgEndYear"
+                  value={form.pgEndYear}
+                  onChange={handleChange}
+                  className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Type NA if not applicable"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Technical Expertise</label>
+              <input
+                type="text"
+                name="expertise"
+                value={form.expertise}
+                onChange={handleChange}
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Experience (years)</label>
+              <input
+                type="number"
+                name="experience"
+                value={form.experience}
+                onChange={handleChange}
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                required
+              />
+            </div>
+            <div className="md:col-span-2 flex items-center mb-2">
+              <input
+                type="checkbox"
+                id="showPhotoPlaceholder"
+                name="showPhotoPlaceholder"
+                checked={form.showPhotoPlaceholder}
+                onChange={handleChange}
+                className="mr-2"
+              />
+              <label htmlFor="showPhotoPlaceholder" className="text-sm font-medium text-gray-700">Show profile image placeholder in PDF</label>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Experience List</label>
+              {form.experienceList.map((exp, index) => (
+                <div key={index} className="flex gap-4 mb-2">
+                  <input
+                    type="text"
+                    placeholder="Role"
+                    value={exp.role}
+                    onChange={(e) => handleExperienceChange(index, 'role', e.target.value)}
+                    className="flex-1 border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Organization"
+                    value={exp.organization}
+                    onChange={(e) => handleExperienceChange(index, 'organization', e.target.value)}
+                    className="flex-1 border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Duration (e.g., May 2020 - Present)"
+                    value={exp.duration}
+                    onChange={(e) => handleExperienceChange(index, 'duration', e.target.value)}
+                    className="flex-1 border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  {form.experienceList.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveExperience(index)}
+                      className="text-red-500 hover:text-red-700"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={handleAddExperience}
+                className="text-blue-600 hover:text-blue-800 text-sm mt-1"
+              >
+                + Add Experience
+              </button>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">About Trainer</label>
+              <textarea
+                name="aboutTrainer"
+                value={form.aboutTrainer}
+                onChange={handleChange}
+                rows="5"
+                className="w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+                required
+              ></textarea>
+            </div>
+            <div className="md:col-span-2 flex justify-end gap-3">
+              <button
+                type="submit"
+                className="bg-green-600 text-white px-5 py-2 rounded-lg hover:bg-green-700 transition duration-200 shadow-md"
+                disabled={loading}
+              >
+                {loading ? 'Saving...' : (editId ? 'Update Profile' : 'Add Profile')}
+              </button>
+              <button
+                type="button"
+                onClick={handleCancel}
+                className="bg-gray-300 text-gray-800 px-5 py-2 rounded-lg hover:bg-gray-400 transition duration-200 shadow-md"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {selectedTrainerId && (
+        <div className="bg-white p-6 rounded-lg shadow-lg mb-8">
+          <h3 className="text-xl font-semibold text-gray-800 mb-4">Trainer Details</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+            <div>
+              <p className="text-sm font-medium text-gray-700">Name:</p>
+              <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.name}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-700">Designation:</p>
+              <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.designation}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-700">UG Education:</p>
+              <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.ugEducation}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-700">UG College:</p>
+              <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.ugCollege}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-700">UG Start Year:</p>
+              <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.ugStartYear}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-700">UG End Year:</p>
+              <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.ugEndYear}</p>
+            </div>
+            {profiles.find(t => t.id === selectedTrainerId)?.pgEducation && profiles.find(t => t.id === selectedTrainerId)?.pgEducation.toUpperCase() !== 'NA' && (
+              <>
+                <div>
+                  <p className="text-sm font-medium text-gray-700">PG Education:</p>
+                  <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.pgEducation}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-700">PG College:</p>
+                  <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.pgCollege}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-700">PG Start Year:</p>
+                  <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.pgStartYear}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-700">PG End Year:</p>
+                  <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.pgEndYear}</p>
+                </div>
+              </>
+            )}
+            <div>
+              <p className="text-sm font-medium text-gray-700">Technical Expertise:</p>
+              <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.expertise}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-700">Experience:</p>
+              <p className="text-gray-900">{profiles.find(t => t.id === selectedTrainerId)?.experience} years</p>
+            </div>
+            <div className="md:col-span-2">
+              <p className="text-sm font-medium text-gray-700 mb-1">Experience List:</p>
+              <ul className="list-disc list-inside text-gray-900">
+                {profiles.find(t => t.id === selectedTrainerId)?.experienceList && profiles.find(t => t.id === selectedTrainerId)?.experienceList.map((exp, i) => (
+                  <li key={i}>
+                    <span className="font-semibold">{exp.role}</span> – {exp.organization} ({exp.duration})
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="md:col-span-2">
+              <p className="text-sm font-medium text-gray-700 mb-1">About Trainer:</p>
+              <p className="text-gray-900 whitespace-pre-line">{profiles.find(t => t.id === selectedTrainerId)?.aboutTrainer}</p>
+            </div>
+            <div className="flex flex-col gap-2 min-w-[120px]">
+              <button
+                onClick={() => handleEdit(profiles.find(t => t.id === selectedTrainerId))}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition duration-200 shadow-md"
+              >
+                Edit
+              </button>
+              <button
+                className="bg-red-600 text-white px-3 py-2 rounded hover:bg-red-700"
+                onClick={() => handleDelete(selectedTrainerId)}
+              >
+                Delete
+              </button>
+              <button
+                className="bg-green-600 text-white px-3 py-2 rounded hover:bg-green-700"
+                onClick={() => setShowPdfPreview(true)}
+              >
+                Generate PDF
+              </button>
+            </div>
+          </div>
+          {showPdfPreview && (
+            <div className="mt-8 border-t pt-6">
+              <h4 className="text-xl font-semibold mb-2">PDF Preview</h4>
+              <div className="bg-gray-100 p-4 rounded text-gray-500">
+                <PDFViewer width="100%" height={600} showToolbar={true}>
+                  <TrainerProfilePDF profile={profiles.find(t => t.id === selectedTrainerId)} />
+                </PDFViewer>
+                <div className="mt-4">
+                  <PDFDownloadLink
+                    document={<TrainerProfilePDF profile={profiles.find(t => t.id === selectedTrainerId)} />}
+                    fileName={`${profiles.find(t => t.id === selectedTrainerId)?.name.replace(/\s+/g, '_')}_Profile.pdf`}
+                  >
+                    {({ loading }) => (
+                      <button className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                        {loading ? 'Preparing PDF...' : 'Download PDF'}
+                      </button>
+                    )}
+                  </PDFDownloadLink>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default TrainerProfilesPage; 
