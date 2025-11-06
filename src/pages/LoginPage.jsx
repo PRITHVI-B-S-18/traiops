@@ -228,8 +228,22 @@ const LoginPage = () => {
       // Navigation will be handled by the useEffect that checks user state
       // Small delay to ensure auth state is updated and show success feedback
       setTimeout(() => {
-        const redirectPath = from !== '/login' ? from : '/admin/schedule';
-        navigate(redirectPath, { replace: true });
+        // Redirect based on user role if no intended destination
+        if (from !== '/login') {
+          navigate(from, { replace: true });
+        } else {
+          // Determine redirect based on user role
+          const userRole = user?.role; // Get role from context
+          let defaultPath = '/admin/schedule';
+          
+          if (userRole === 'trainer') {
+            defaultPath = '/trainer/schedule';
+          } else if (userRole === 'program_manager') {
+            defaultPath = '/program-manager/dashboard';
+          }
+          
+          navigate(defaultPath, { replace: true });
+        }
       }, 800);
     } catch (err) {
       console.error('Login error:', err);

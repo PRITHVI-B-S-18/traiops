@@ -251,9 +251,14 @@ const AuthProvider = ({ children }) => {
           } else {
             // If no user document exists, determine role from email or default to admin
             const email = firebaseUser.email || '';
-            const role = email.includes('trainer') || email.includes('@trainer') 
-              ? 'trainer' 
-              : 'admin';
+            let role = 'admin'; // Default role
+            
+            if (email.includes('trainer') || email.includes('@trainer')) {
+              role = 'trainer';
+            } else if (email.includes('pm') || email.includes('program-manager') || email.includes('programmanager')) {
+              role = 'program_manager';
+            }
+            
             setUser({
               ...firebaseUser,
               role: role,
@@ -313,9 +318,13 @@ const AuthProvider = ({ children }) => {
       
       // Determine role from email if no Firestore document
       const emailStr = userCredential.user.email || '';
-      const role = emailStr.includes('trainer') || emailStr.includes('@trainer') 
-        ? 'trainer' 
-        : 'admin';
+      let role = 'admin'; // Default role
+      
+      if (emailStr.includes('trainer') || emailStr.includes('@trainer')) {
+        role = 'trainer';
+      } else if (emailStr.includes('pm') || emailStr.includes('program-manager') || emailStr.includes('programmanager')) {
+        role = 'program_manager';
+      }
       
       return {
         ...userCredential.user,
