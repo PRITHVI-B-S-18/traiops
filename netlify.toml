@@ -1,0 +1,23 @@
+# Minimal Netlify configuration - Functions Only
+# This site is only for hosting the email function
+# Your main app is deployed elsewhere (Firebase Hosting)
+
+# Function configuration for Netlify Functions
+[functions]
+  # Directory where Netlify Functions are located
+  directory = "netlify/functions"
+  # Node.js version for functions
+  node_bundler = "esbuild"
+
+# Install dependencies for functions
+[build]
+  # Empty publish directory (functions don't need a site)
+  publish = "."
+  # Install dependencies so functions can use them
+  command = "npm install"
+
+# Environment variables (these will be set in Netlify dashboard)
+# Don't put actual values here - use Netlify dashboard instead
+[build.environment]
+  NODE_VERSION = "18"
+

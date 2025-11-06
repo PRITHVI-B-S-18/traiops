@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
-import { CalendarDays, Users, LogOut, Menu, X, User, BarChart3 } from 'lucide-react';
+import { CalendarDays, Users, LogOut, Menu, X, User, BarChart3, MapPin, UserPlus } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const AdminDashboardLayout = () => {
@@ -39,6 +39,8 @@ const AdminDashboardLayout = () => {
     { path: '/admin/trainers', label: 'Trainer Accounts', icon: Users },
     { path: '/admin/profiles', label: 'Trainer Profiles', icon: Users },
     { path: '/admin/utilization', label: 'Trainer Utilization', icon: BarChart3 },
+    { path: '/admin/locations', label: 'Location Management', icon: MapPin },
+    { path: '/admin/invitations', label: 'User Invitations', icon: UserPlus },
   ];
 
   return (
