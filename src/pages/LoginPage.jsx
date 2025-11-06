@@ -222,7 +222,7 @@ const LoginPage = () => {
       
         toast({
           title: "Login Successful",
-        description: `Welcome back, ${email.split('@')[0]}! Redirecting...`,
+        description: `Welcome back, ${email.split('@')[0]}!`,
       });
 
       // Navigation will be handled by the useEffect that checks user state
