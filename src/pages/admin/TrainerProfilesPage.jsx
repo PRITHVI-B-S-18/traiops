@@ -1,8 +1,23 @@
 import React, { useState, useEffect } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import { db } from '../../firebase';
 import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { PDFViewer, PDFDownloadLink, Document, Page, Image, View, Text, StyleSheet, Font } from '@react-pdf/renderer';
 import { parse, differenceInMonths } from 'date-fns';
+import { Plus, FileText, AlertTriangle, Loader2, User } from 'lucide-react';
+import { useToast } from '@/components/ui/use-toast';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import { cardStyles, cardPadding } from '@/styles/designSystem';
+import { LoadingSkeleton } from '@/components/ui/loading-skeletons';
 import page1 from '../../assets/page1.png';
 import page2 from '../../assets/page2.png';
 import page3 from '../../assets/page3.png';
@@ -248,26 +263,56 @@ const TrainerProfilePDF = ({ profile }) => (
 );
 
 const TrainerProfilesPage = () => {
+  const { setCommandState } = useOutletContext();
+  const { toast } = useToast();
   const [form, setForm] = useState(getInitialForm());
   const [profiles, setProfiles] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState(null);
-  const [message, setMessage] = useState('');
   const [selectedTrainerId, setSelectedTrainerId] = useState('');
   const [showPdfPreview, setShowPdfPreview] = useState(false);
   const [originalFormState, setOriginalFormState] = useState(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
     fetchProfiles();
   }, []);
 
   useEffect(() => {
-    if (message) {
-      const timer = setTimeout(() => setMessage(''), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [message]);
+    setCommandState({
+      title: 'Trainer Profiles',
+      description: 'Create and manage professional trainer profiles with detailed qualifications and experience.',
+      actions: (
+        <Button
+          onClick={() => {
+            setShowForm(true);
+            setEditId(null);
+            setForm(getInitialForm());
+            setSelectedTrainerId('');
+          }}
+          size="sm"
+          className="flex items-center gap-2 whitespace-nowrap"
+        >
+          <Plus className="h-4 w-4" />
+          Create Profile
+        </Button>
+      ),
+      metrics: [
+        <div key="total" className={cn(cardStyles.surface, cardPadding)}>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-slate-500">Total Profiles</p>
+              <p className="text-2xl font-bold text-slate-900 mt-1">{profiles.length}</p>
+            </div>
+            <FileText className="h-8 w-8 text-indigo-600" />
+          </div>
+        </div>,
+      ],
+    });
+  }, [profiles, setCommandState]);
 
   const fetchProfiles = async () => {
     setLoading(true);
@@ -315,15 +360,20 @@ const TrainerProfilesPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setMessage('');
-    setLoading(true);
+    setIsProcessing(true);
     try {
       if (editId) {
         await updateDoc(doc(db, 'trainer_profiles', editId), form);
-        setMessage('Profile updated successfully!');
+        toast({
+          title: 'Profile updated',
+          description: `${form.name}'s profile has been updated successfully.`,
+        });
       } else {
         await addDoc(collection(db, 'trainer_profiles'), form);
-        setMessage('Profile added successfully!');
+        toast({
+          title: 'Profile created',
+          description: `${form.name}'s profile has been created successfully.`,
+        });
       }
       setForm(getInitialForm());
       setShowForm(false);
@@ -331,9 +381,14 @@ const TrainerProfilesPage = () => {
       fetchProfiles();
     } catch (error) {
       console.error("Error adding/updating document: ", error);
-      setMessage('Error saving profile.');
+      toast({
+        title: 'Error',
+        description: 'Failed to save profile. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsProcessing(false);
     }
-    setLoading(false);
   };
 
   const handleEdit = (trainer) => {
@@ -346,18 +401,33 @@ const TrainerProfilesPage = () => {
     setShowPdfPreview(false);
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm('Are you sure you want to delete this profile?')) {
-      setLoading(true);
-      try {
-        await deleteDoc(doc(db, 'trainer_profiles', id));
-        setMessage('Profile deleted successfully!');
+  const handleDelete = (id) => {
+    setDeleteTarget(id);
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setIsProcessing(true);
+    setShowDeleteConfirm(false);
+    try {
+      const profileToDelete = profiles.find(p => p.id === deleteTarget);
+      await deleteDoc(doc(db, 'trainer_profiles', deleteTarget));
+      toast({
+        title: 'Profile deleted',
+        description: profileToDelete?.name ? `${profileToDelete.name}'s profile has been deleted.` : 'Profile deleted successfully.',
+      });
         fetchProfiles();
       } catch (error) {
         console.error("Error deleting document: ", error);
-        setMessage('Error deleting profile.');
-      }
-      setLoading(false);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete profile. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsProcessing(false);
+      setDeleteTarget(null);
     }
   };
 
@@ -369,27 +439,42 @@ const TrainerProfilesPage = () => {
     setShowPdfPreview(false);
   };
 
-  return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <h2 className="text-2xl font-bold text-gray-800 mb-6">Trainer Profiles</h2>
+  if (loading) {
+    return <LoadingSkeleton message="Loading profiles..." />;
+  }
 
-      <div className="flex justify-between items-center mb-6">
-        <button
+  return (
+    <div className="space-y-6">
+      {profiles.length === 0 && (
+        <div className={cn(cardStyles.surface, 'p-12 text-center')}>
+          <FileText className="mx-auto text-slate-300 mb-4" size={48} />
+          <h3 className="text-lg font-semibold text-slate-900 mb-2">No trainer profiles yet</h3>
+          <p className="text-sm text-slate-500 mb-6 max-w-md mx-auto">
+            Get started by creating your first trainer profile with detailed qualifications and experience.
+          </p>
+          <Button
           onClick={() => {
             setShowForm(true);
             setEditId(null);
             setForm(getInitialForm());
             setSelectedTrainerId('');
           }}
-          className="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 transition duration-200 shadow-md"
+            size="sm"
         >
+            <Plus className="h-4 w-4 mr-2" />
           Create Profile
-        </button>
+          </Button>
+        </div>
+      )}
+
+      {profiles.length > 0 && (
+        <>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="flex items-center gap-4">
-          <label htmlFor="select-trainer" className="text-gray-700">Select Trainer</label>
+          <label htmlFor="select-trainer" className="text-sm font-medium text-slate-700">Select Trainer</label>
           <select
             id="select-trainer"
-            className="border border-gray-300 rounded-md p-2 w-64 focus:ring-blue-500 focus:border-blue-500"
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent bg-white shadow-sm min-w-[200px]"
             value={selectedTrainerId}
             onChange={(e) => {
               setSelectedTrainerId(e.target.value);
@@ -611,20 +696,21 @@ const TrainerProfilesPage = () => {
               ></textarea>
             </div>
             <div className="md:col-span-2 flex justify-end gap-3">
-              <button
-                type="submit"
-                className="bg-green-600 text-white px-5 py-2 rounded-lg hover:bg-green-700 transition duration-200 shadow-md"
-                disabled={loading}
-              >
-                {loading ? 'Saving...' : (editId ? 'Update Profile' : 'Add Profile')}
-              </button>
-              <button
+              <Button
                 type="button"
+                variant="outline"
                 onClick={handleCancel}
-                className="bg-gray-300 text-gray-800 px-5 py-2 rounded-lg hover:bg-gray-400 transition duration-200 shadow-md"
+                disabled={isProcessing}
               >
                 Cancel
-              </button>
+              </Button>
+              <Button
+                type="submit"
+                isLoading={isProcessing}
+                loadingText="Saving..."
+              >
+                {editId ? 'Update Profile' : 'Add Profile'}
+              </Button>
             </div>
           </form>
         </div>
@@ -701,24 +787,25 @@ const TrainerProfilesPage = () => {
               <p className="text-gray-900 whitespace-pre-line">{profiles.find(t => t.id === selectedTrainerId)?.aboutTrainer}</p>
             </div>
             <div className="flex flex-col gap-2 min-w-[120px]">
-              <button
+              <Button
                 onClick={() => handleEdit(profiles.find(t => t.id === selectedTrainerId))}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition duration-200 shadow-md"
+                className="w-full"
               >
                 Edit
-              </button>
-              <button
-                className="bg-red-600 text-white px-3 py-2 rounded hover:bg-red-700"
+              </Button>
+              <Button
+                variant="destructive"
                 onClick={() => handleDelete(selectedTrainerId)}
+                className="w-full"
               >
                 Delete
-              </button>
-              <button
-                className="bg-green-600 text-white px-3 py-2 rounded hover:bg-green-700"
+              </Button>
+              <Button
                 onClick={() => setShowPdfPreview(true)}
+                className="w-full bg-green-600 hover:bg-green-700"
               >
                 Generate PDF
-              </button>
+              </Button>
             </div>
           </div>
           {showPdfPreview && (
@@ -744,6 +831,43 @@ const TrainerProfilesPage = () => {
             </div>
           )}
         </div>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-rose-600" />
+              Delete Profile
+            </DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this trainer profile? This action cannot be undone and will permanently remove all profile data.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowDeleteConfirm(false);
+                setDeleteTarget(null);
+              }}
+              disabled={isProcessing}
+            >
+              Cancel
+            </Button>
+              <Button
+                variant="destructive"
+                onClick={confirmDelete}
+                isLoading={isProcessing}
+                loadingText="Deleting..."
+              >
+                Delete Profile
+              </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+        </>
       )}
     </div>
   );

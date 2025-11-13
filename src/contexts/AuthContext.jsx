@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { auth, db } from '../firebase';
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged, onIdTokenChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { AuthContext } from './AuthContextValue';
 
 // Session timeout configuration (in milliseconds)
@@ -235,6 +235,8 @@ const AuthProvider = ({ children }) => {
 
   // Firebase Auth state and token listeners
   useEffect(() => {
+    let unsubscribeUserDoc = null; // Real-time listener for user document changes
+    
     // Listen to auth state changes
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
@@ -243,25 +245,84 @@ const AuthProvider = ({ children }) => {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (userDoc.exists()) {
             const userData = userDoc.data();
+            
+            // Check if user account is active
+            if (userData.status === 'inactive') {
+              // Sign out the user immediately if account is inactive
+              await auth.signOut();
+              setUser(null);
+              clearAllTimers();
+              setIsLoading(false);
+              window.location.href = '/login?reason=account_deactivated';
+              return;
+            }
+            
+            // If user has mustChangePassword flag set to true, clear it after successful login
+            // This handles the case where user reset password via email link
+            if (userData.mustChangePassword === true) {
+              try {
+                await updateDoc(doc(db, 'users', firebaseUser.uid), {
+                  mustChangePassword: false
+                });
+              } catch (error) {
+                console.error('Error clearing mustChangePassword flag:', error);
+              }
+            }
+            
             // Add role to user object
             setUser({
               ...firebaseUser,
               role: userData.role || 'admin', // Default to admin if no role found
             });
+            
+            // Set up real-time listener for user document changes
+            // This handles the case where admin deactivates user while they're logged in
+            unsubscribeUserDoc = onSnapshot(
+              doc(db, 'users', firebaseUser.uid),
+              async (snapshot) => {
+                if (snapshot.exists()) {
+                  const updatedUserData = snapshot.data();
+                  
+                  // If status changed to inactive while user is logged in
+                  if (updatedUserData.status === 'inactive') {
+                    console.log('User account deactivated while logged in. Signing out...');
+                    
+                    // Clear all timers
+                    clearAllTimers();
+                    
+                    // Sign out the user
+                    try {
+                      await auth.signOut();
+                    } catch (error) {
+                      console.error('Error signing out:', error);
+                    }
+                    
+                    // Clear user state
+                    setUser(null);
+                    
+                    // Redirect to login with reason
+                    window.location.href = '/login?reason=account_deactivated';
+                  }
+                  
+                  // Update user role if it changed
+                  if (updatedUserData.role && updatedUserData.role !== user?.role) {
+                    setUser(prev => prev ? {
+                      ...prev,
+                      role: updatedUserData.role
+                    } : null);
+                  }
+                }
+              },
+              (error) => {
+                console.error('Error in user document listener:', error);
+              }
+            );
           } else {
-            // If no user document exists, determine role from email or default to admin
-            const email = firebaseUser.email || '';
-            let role = 'admin'; // Default role
-            
-            if (email.includes('trainer') || email.includes('@trainer')) {
-              role = 'trainer';
-            } else if (email.includes('pm') || email.includes('program-manager') || email.includes('programmanager')) {
-              role = 'program_manager';
-            }
-            
+            // If no user document exists, default to admin
+            // Note: All users should be created via invitation system with proper roles
             setUser({
               ...firebaseUser,
-              role: role,
+              role: 'admin', // Default to admin if no Firestore document
             });
           }
         } catch (error) {
@@ -276,6 +337,11 @@ const AuthProvider = ({ children }) => {
         // Setup session timers when user logs in
         setupSessionTimers();
       } else {
+        // User logged out, cleanup real-time listener
+        if (unsubscribeUserDoc) {
+          unsubscribeUserDoc();
+          unsubscribeUserDoc = null;
+        }
         setUser(null);
         clearAllTimers();
       }
@@ -293,6 +359,9 @@ const AuthProvider = ({ children }) => {
     return () => {
       unsubscribeAuth();
       unsubscribeToken();
+      if (unsubscribeUserDoc) {
+        unsubscribeUserDoc();
+      }
       clearAllTimers();
     };
   }, [setupSessionTimers, clearAllTimers]);
@@ -302,33 +371,40 @@ const AuthProvider = ({ children }) => {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       
-      // Fetch user role after login
+      // Fetch user role and status after login
       try {
         const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
         if (userDoc.exists()) {
           const userData = userDoc.data();
+          
+          // Check if user account is active
+          if (userData.status === 'inactive') {
+            // Sign out the user immediately if account is inactive
+            await auth.signOut();
+            throw {
+              code: 'auth/account-disabled',
+              message: 'Your account has been deactivated. Please contact your administrator.'
+            };
+          }
+          
           return {
             ...userCredential.user,
             role: userData.role || 'admin',
           };
         }
       } catch (error) {
+        // If it's our custom error, re-throw it
+        if (error.code === 'auth/account-disabled') {
+          throw error;
+        }
         console.error('Error fetching user role after login:', error);
       }
       
-      // Determine role from email if no Firestore document
-      const emailStr = userCredential.user.email || '';
-      let role = 'admin'; // Default role
-      
-      if (emailStr.includes('trainer') || emailStr.includes('@trainer')) {
-        role = 'trainer';
-      } else if (emailStr.includes('pm') || emailStr.includes('program-manager') || emailStr.includes('programmanager')) {
-        role = 'program_manager';
-      }
-      
+      // Default to admin if no Firestore document
+      // Note: All users should be created via invitation system
       return {
         ...userCredential.user,
-        role: role,
+        role: 'admin',
       };
     } catch (error) {
       throw error;

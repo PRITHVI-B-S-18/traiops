@@ -1,15 +1,45 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
-import { LayoutDashboard, Users, CheckCircle, History, LogOut, Menu, X, User } from 'lucide-react';
-import { motion } from 'framer-motion';
+import {
+  LayoutDashboard,
+  Users,
+  ClipboardCheck,
+  LogOut,
+  Menu,
+  ChevronLeft,
+  ChevronRight,
+  History,
+  ChevronDown,
+  ChevronUp
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import {
+  cardPadding,
+  cardStyles,
+  getChipClasses,
+  layoutBackground,
+  panelPadding,
+  sectionSpacing
+} from '@/styles/designSystem';
+
+const defaultCommandState = {
+  title: 'Program Manager Dashboard',
+  description: 'Manage trainers, clients, and clock requests.',
+  actions: null,
+  metrics: null,
+};
 
 const ProgramManagerDashboardLayout = () => {
   const { logout, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [commandState, setCommandState] = useState(defaultCommandState);
+  const [metricsExpanded, setMetricsExpanded] = useState(false);
+
+  const resetCommandState = useCallback(() => setCommandState(defaultCommandState), []);
 
   const handleLogout = async () => {
     try {
@@ -17,7 +47,6 @@ const ProgramManagerDashboardLayout = () => {
       navigate('/login', { replace: true });
     } catch (error) {
       console.error('Logout error:', error);
-      // Still navigate to login even if logout fails
       navigate('/login', { replace: true });
     }
   };
@@ -25,101 +54,176 @@ const ProgramManagerDashboardLayout = () => {
   const navItems = [
     { path: '/program-manager/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { path: '/program-manager/trainers', label: 'My Trainers', icon: Users },
-    { path: '/program-manager/requests', label: 'Pending Requests', icon: CheckCircle },
-    { path: '/program-manager/history', label: 'Request History', icon: History },
+    { path: '/program-manager/requests', label: 'Request Approvals', icon: ClipboardCheck },
+    { path: '/program-manager/history', label: 'Request History', icon: History }
   ];
 
+  const sidebarWidthClass = useMemo(() => (sidebarCollapsed ? 'lg:w-20' : 'lg:w-56'), [sidebarCollapsed]);
+
   return (
-    <div className="flex h-screen bg-[#F5F5F5]">
-      <motion.aside 
-        initial={{ x: -200 }}
-        animate={{ 
-          x: sidebarCollapsed ? -200 : 0,
-          width: sidebarCollapsed ? 0 : 200
-        }}
-        transition={{ duration: 0.3, ease: "easeInOut" }}
-        className="sidebar-minimal flex flex-col overflow-hidden bg-white"
+    <div className={cn('relative flex min-h-screen w-full', layoutBackground)}>
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-40 flex h-full flex-col border-r border-slate-200 bg-white shadow-xl transition-transform duration-300 lg:sticky lg:top-0 lg:h-screen lg:self-start lg:translate-x-0',
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
+          sidebarWidthClass
+        )}
       >
-        <div className="p-4 border-b border-[#E0E0E0] relative">
-          {/* Sidebar Toggle Button - positioned inside sidebar */}
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          {!sidebarCollapsed && (
+            <Link
+              to="/program-manager/dashboard"
+              className="text-lg font-semibold text-slate-900"
+              onClick={() => setSidebarOpen(false)}
+            >
+              PM Panel
+            </Link>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSidebarCollapsed((prev) => !prev)}
+              className="hidden rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 lg:inline-flex"
+              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {sidebarCollapsed ? (
+                <ChevronRight className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+              )}
+            </button>
           <button
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            className="absolute top-4 right-4 p-2 sidebar-toggle rounded-lg bg-white border border-[#E0E0E0] hover:bg-[#F5F5F5]"
+              onClick={() => setSidebarOpen((prev) => !prev)}
+              className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 lg:hidden"
+              aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
           >
-            <X className="h-4 w-4 text-[#666666]" />
+              <Menu className="h-4 w-4" aria-hidden="true" />
           </button>
-          
-          <Link to="/program-manager/dashboard" className="flex items-center text-lg font-semibold text-[#2C2C2C] hover:text-[#000000] transition-colors pr-12">
-            <span>Program Manager</span>
-          </Link>
+          </div>
         </div>
         
-        <nav className="flex-grow p-3">
-          <ul className="space-y-1">
-            {navItems.map((item) => (
-              <li key={item.path}>
+        <nav className="flex-1 overflow-y-auto px-3 py-4">
+          <div className="space-y-1">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const active = location.pathname === item.path;
+
+              return (
                 <Link
+                  key={item.path}
                   to={item.path}
-                  className={`flex items-center space-x-3 px-3 py-2 rounded-lg transition-all duration-200 text-sm font-medium
-                    ${location.pathname === item.path 
-                      ? 'bg-[#E8E8E8] text-[#2C2C2C] border border-[#D0D0D0]' 
-                      : 'text-[#666666] hover:bg-[#F5F5F5] hover:text-[#2C2C2C]'}`}
+                  onClick={() => setSidebarOpen(false)}
+                  className={cn(
+                    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                    active
+                      ? 'bg-slate-100 text-slate-900'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  )}
+                  title={sidebarCollapsed ? item.label : undefined}
                 >
-                  <item.icon className="h-4 w-4" />
-                  <span>{item.label}</span>
+                  <Icon className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+                  {!sidebarCollapsed && <span>{item.label}</span>}
                 </Link>
-              </li>
-            ))}
-          </ul>
+              );
+            })}
+          </div>
         </nav>
         
-        <div className="p-3 border-t border-[#E0E0E0] space-y-3">
-          {/* User Details Section */}
-          {user && (
-            <div className="px-3 py-2 bg-[#F5F5F5] rounded-lg">
-              <div className="flex items-center space-x-2 mb-2">
-                <User className="h-4 w-4 text-[#888888]" />
-                <span className="text-xs font-medium text-[#888888] uppercase tracking-wide">Logged in as</span>
-              </div>
-              <div className="space-y-1">
-                {user.displayName && (
-                  <p className="text-sm font-medium text-[#2C2C2C] truncate">
-                    {user.displayName}
-                  </p>
-                )}
-                <p className="text-xs text-[#666666] truncate">
-                  {user.email}
-                </p>
+        <div className="border-t border-slate-200 p-4">
+          {!sidebarCollapsed && user && (
+            <div className={cn(cardStyles.subtle, 'px-3 py-2')}>
+              <span className={cn(getChipClasses('muted'), 'text-[11px] uppercase')}>
+                Logged in as
+              </span>
+              <div className="mt-2 space-y-1">
+                {user.displayName ? (
+                  <p className="truncate text-sm font-semibold text-slate-900">{user.displayName}</p>
+                ) : null}
+                <p className="truncate text-xs text-slate-500">{user.email}</p>
               </div>
             </div>
           )}
           
-          <Button
+          <button
             onClick={handleLogout}
-            variant="ghost"
-            className="w-full flex items-center justify-start space-x-3 px-3 py-2 text-[#666666] hover:bg-[#F5F5F5] hover:text-[#2C2C2C] transition-colors text-sm font-medium"
+            className="mt-3 flex w-full items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
+            title={sidebarCollapsed ? 'Logout' : undefined}
           >
-            <LogOut className="h-4 w-4" />
-            <span>Logout</span>
-          </Button>
+            <LogOut className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+            {!sidebarCollapsed && <span>Logout</span>}
+          </button>
         </div>
-      </motion.aside>
+      </aside>
       
-      {/* Floating toggle button for when sidebar is collapsed */}
-      {sidebarCollapsed && (
+      <div className="flex flex-1 flex-col">
+        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 shadow-sm lg:hidden">
         <button
-          onClick={() => setSidebarCollapsed(false)}
-          className="fixed top-4 left-4 z-50 p-2 sidebar-toggle rounded-lg bg-white border border-[#E0E0E0] hover:bg-[#F5F5F5]"
+            onClick={() => setSidebarOpen(true)}
+            className="rounded-lg border border-slate-200 p-2 text-slate-600 transition hover:bg-slate-50"
+            aria-label="Open navigation menu"
         >
-          <Menu className="h-4 w-4 text-[#666666]" />
+            <Menu className="h-5 w-5" aria-hidden="true" />
         </button>
-      )}
-      
-      <main className={`flex-1 p-2 md:p-6 overflow-auto transition-all duration-300 ${sidebarCollapsed ? 'ml-0' : 'ml-0'}`}>
-        <div className="bg-white border border-[#E0E0E0] rounded-lg shadow-sm min-h-full">
-          <Outlet context={{ sidebarCollapsed }} />
+          {/* <span className="text-sm font-semibold text-slate-700">TrainOps</span> */}
+          {/* <div className="flex max-w-[55%] flex-col items-end">
+            <span className="max-w-full truncate text-xs font-medium text-slate-700">
+              {user?.displayName || user?.email || 'Program Manager'}
+            </span>
+            {user?.displayName && user?.email ? (
+              <span className="max-w-full truncate text-[11px] text-slate-500">{user.email}</span>
+            ) : null}
+          </div> */}
+        </header>
+
+        <main className="flex-1 overflow-y-auto lg:h-screen lg:overflow-y-auto">
+          <div className={cn('mx-auto w-full max-w-6xl', panelPadding, sectionSpacing)}>
+            <div className="space-y-4">
+              <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h1 className="text-2xl font-semibold text-slate-900">{commandState.title}</h1>
+                      {commandState.metrics && (
+                        <button
+                          onClick={() => setMetricsExpanded(!metricsExpanded)}
+                          className="rounded-lg p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 flex-shrink-0"
+                          aria-label={metricsExpanded ? 'Hide metrics' : 'Show metrics'}
+                          aria-expanded={metricsExpanded}
+                        >
+                          {metricsExpanded ? (
+                            <ChevronUp className="h-5 w-5" aria-hidden="true" />
+                          ) : (
+                            <ChevronDown className="h-5 w-5" aria-hidden="true" />
+                          )}
+                        </button>
+                      )}
+                    </div>
+                    {commandState.description && (
+                      <p className="text-sm text-slate-500 mt-1">{commandState.description}</p>
+                    )}
+                  </div>
+                </div>
+                {commandState.actions && (
+                  <div className="flex flex-wrap items-center justify-end gap-2 flex-shrink-0 sm:ml-4">{commandState.actions}</div>
+                )}
+              </div>
+              {commandState.metrics && metricsExpanded && (
+                <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-4 transition-opacity duration-300 ease-in-out">
+                  {commandState.metrics}
+                </div>
+              )}
+              <Outlet context={{ sidebarOpen: !sidebarCollapsed, setCommandState, resetCommandState }} />
+            </div>
         </div>
       </main>
+      </div>
     </div>
   );
 };

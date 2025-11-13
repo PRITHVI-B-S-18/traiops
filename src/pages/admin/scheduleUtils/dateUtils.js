@@ -1,5 +1,6 @@
 
 import { format, parse, isValid, addMonths, subMonths, startOfMonth, endOfMonth, eachDayOfInterval, getDay } from 'date-fns';
+import { formatDateForDisplay, convertFromUTC, convertToUTC } from '@/utils/timezoneUtils';
 
 export const DATE_FORMAT_STORAGE = 'yyyy-MM-dd';
 export const DATE_FORMAT_DISPLAY_FULL = 'MMMM d, yyyy';
@@ -10,18 +11,38 @@ export const daysOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export const getCurrentMonthYear = () => new Date();
 
+/**
+ * Format date for storage (convert to UTC)
+ * Dates should be stored in UTC format
+ */
 export const getFormattedDateForStorage = (date) => {
   if (!date) return '';
   if (typeof date === 'string') {
+    // If it's already a date string, ensure it's in UTC
     const parsed = parseISOString(date);
-    return isValid(parsed) ? format(parsed, DATE_FORMAT_STORAGE) : '';
+    if (isValid(parsed)) {
+      const dateStr = format(parsed, DATE_FORMAT_STORAGE);
+      // Convert to UTC if not already
+      return convertToUTC(dateStr);
   }
-  return isValid(date) ? format(date, DATE_FORMAT_STORAGE) : '';
+    return '';
+  }
+  if (isValid(date)) {
+    const dateStr = format(date, DATE_FORMAT_STORAGE);
+    return convertToUTC(dateStr);
+  }
+  return '';
 };
 
+/**
+ * Format date for display (convert from UTC to user's timezone)
+ * Dates stored in UTC should be converted to user's timezone for display
+ */
 export const getFormattedDateForDisplayFull = (dateString) => {
   if (!dateString) return 'N/A';
-  const date = parse(dateString, DATE_FORMAT_STORAGE, new Date());
+  // Assume dateString is in UTC, convert to user's timezone for display
+  const userTimezoneDate = convertFromUTC(dateString);
+  const date = parse(userTimezoneDate, DATE_FORMAT_STORAGE, new Date());
   return isValid(date) ? format(date, DATE_FORMAT_DISPLAY_FULL) : 'Invalid Date';
 };
 

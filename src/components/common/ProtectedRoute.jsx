@@ -37,14 +37,10 @@ const ProtectedRoute = ({ allowedRoles }) => {
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     // Redirect to appropriate dashboard based on role
-    let redirectPath = '/admin/schedule'; // Default
-    
-    if (user.role === 'trainer') {
-      redirectPath = '/trainer/schedule';
-    } else if (user.role === 'program_manager') {
-      redirectPath = '/program-manager/dashboard';
-    }
-    
+    const redirectPath = 
+      user.role === 'admin' ? '/admin/schedule' :
+      user.role === 'program_manager' ? '/program-manager/dashboard' :
+      '/trainer/schedule';
     return <Navigate to={redirectPath} replace />;
   }
 

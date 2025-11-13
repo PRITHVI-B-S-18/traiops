@@ -1,8 +1,10 @@
-import React, { useState, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { Filter, Search, X as CloseIcon, Trash2, CheckSquare, Square, Calendar, User, AlertTriangle } from 'lucide-react';
+import { Filter, Search, X as CloseIcon, Trash2, CheckSquare, Square, Calendar, User, AlertTriangle, Edit3, PlusCircle, ChevronDown } from 'lucide-react';
 import { saveScheduleData } from '../../utils/firestoreSchedule';
 import { motion, AnimatePresence } from 'framer-motion';
+import { cancelPendingRequestsForTask } from '../../utils/firestoreClockRequests';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 
 // Color mapping for statuses with darker, more professional colors
 const STATUS_COLORS = {
@@ -219,9 +221,16 @@ const TrainerMatrixView = React.memo(({
   sidebarCollapsed = false,
   toast = () => {},
 }) => {
-  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
-  const daysArray = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+  const daysInMonth = useMemo(
+    () => new Date(currentYear, currentMonth + 1, 0).getDate(),
+    [currentYear, currentMonth]
+  );
+  const daysArray = useMemo(
+    () => Array.from({ length: daysInMonth }, (_, i) => i + 1),
+    [daysInMonth]
+  );
   const [selectedDay, setSelectedDay] = useState(null);
+  const [activeDailyPanel, setActiveDailyPanel] = useState('training');
   const [bulkSelectMode, setBulkSelectMode] = useState(false);
   const [selectedCells, setSelectedCells] = useState(new Set());
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
@@ -255,6 +264,100 @@ const TrainerMatrixView = React.memo(({
   const [selectedTrainers, setSelectedTrainers] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
   const [isSelectedTrainersVisible, setIsSelectedTrainersVisible] = useState(true);
+
+  const hasActiveFilters = useMemo(() => {
+    return (
+      matrixFilters.specialization.length > 0 ||
+      matrixFilters.client.length > 0 ||
+      matrixFilters.course.length > 0 ||
+      matrixFilters.nonTrainingTaskTypes.length > 0 ||
+      matrixFilters.type !== 'all' ||
+      matrixFilters.role !== 'all' ||
+      (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') ||
+      (matrixFilters.endDate && matrixFilters.endDate.trim() !== '')
+    );
+  }, [matrixFilters]);
+
+  const trainerMonthlyEntries = useMemo(() => {
+    const index = new Map();
+    if (!flattenedScheduleData || flattenedScheduleData.length === 0) {
+      return index;
+    }
+
+    const monthStart = new Date(currentYear, currentMonth, 1);
+    const monthEnd = new Date(currentYear, currentMonth + 1, 0);
+
+    flattenedScheduleData.forEach((entry) => {
+      if (!entry?.trainer) return;
+      const entryStart = parseLocalDate(entry.startDate);
+      const entryEnd = parseLocalDate(entry.endDate || entry.startDate);
+      if (!entryStart || !entryEnd) return;
+      if (entryEnd < monthStart || entryStart > monthEnd) return;
+
+      if (!index.has(entry.trainer)) {
+        index.set(entry.trainer, []);
+      }
+      index.get(entry.trainer).push(entry);
+    });
+
+    return index;
+  }, [flattenedScheduleData, currentYear, currentMonth]);
+
+  const matchesMatrixFilters = useCallback(
+    (entry, dateOverride) => {
+      if (!entry) return false;
+      if (matrixFilters.type === 'available') return false;
+
+      if (matrixFilters.client.length > 0) {
+        if (!entry.client || !matrixFilters.client.includes(entry.client)) return false;
+      }
+
+      if (matrixFilters.course.length > 0) {
+        if (!entry.course || !matrixFilters.course.includes(entry.course)) return false;
+      }
+
+      if (matrixFilters.type === 'training' && entry.type !== 'training') return false;
+      if (matrixFilters.type === 'non-training' && entry.type !== 'non-training') return false;
+
+      if (matrixFilters.role !== 'all' && entry.type === 'training') {
+        if (!entry.role || entry.role !== matrixFilters.role) return false;
+      }
+
+      if (
+        matrixFilters.nonTrainingTaskTypes.length > 0 &&
+        entry.type === 'non-training'
+      ) {
+        if (!entry.taskType || !matrixFilters.nonTrainingTaskTypes.includes(entry.taskType)) {
+          return false;
+        }
+      }
+
+      const entryStart = parseLocalDate(entry.startDate);
+      const entryEnd = parseLocalDate(entry.endDate || entry.startDate);
+      const filterStart = matrixFilters.startDate?.trim() ? parseLocalDate(matrixFilters.startDate) : null;
+      const filterEnd = matrixFilters.endDate?.trim() ? parseLocalDate(matrixFilters.endDate) : null;
+      const referenceDate = dateOverride ? parseLocalDate(dateOverride) : null;
+
+      if (filterStart) {
+        if (referenceDate) {
+          if (referenceDate < filterStart) return false;
+        } else if (entryEnd && entryEnd < filterStart) {
+          return false;
+        }
+      }
+
+      if (filterEnd) {
+        if (referenceDate) {
+          if (referenceDate > filterEnd) return false;
+        } else if (entryStart && entryStart > filterEnd) {
+          return false;
+        }
+      }
+
+      return true;
+    },
+    [matrixFilters]
+  );
 
   // Filter trainers based on ALL matrix filters (overall matrix view filter)
   const filteredTrainers = useMemo(() => {
@@ -301,16 +404,6 @@ const TrainerMatrixView = React.memo(({
       });
     }
 
-    // Check if any filters are applied (excluding specialization and search which are handled above)
-    const hasActiveFilters = 
-      matrixFilters.client.length > 0 ||
-      matrixFilters.course.length > 0 ||
-      matrixFilters.type !== 'all' ||
-      matrixFilters.role !== 'all' ||
-      matrixFilters.nonTrainingTaskTypes.length > 0 ||
-      (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') ||
-      (matrixFilters.endDate && matrixFilters.endDate.trim() !== '');
-
     // If no filters are applied, show all trainers (including available ones)
     if (!hasActiveFilters) {
       return currentTrainers;
@@ -318,112 +411,40 @@ const TrainerMatrixView = React.memo(({
 
     // Apply ALL matrix filters to determine which trainers should be shown
     // A trainer should only be shown if they have entries that match ALL the selected criteria
-    currentTrainers = currentTrainers.filter(trainer => {
-      // Check if this trainer has any entries in the current month that match ALL the matrix filters
-      const hasMatchingEntries = Object.values(scheduleData).some(entries => {
-        return entries.some(entry => {
-          // 1. Trainer Name Match
-          if (entry.trainer !== trainer.name) return false;
+    currentTrainers = currentTrainers.filter((trainer) => {
+      const entriesForTrainer = trainerMonthlyEntries.get(trainer.name) || [];
 
-          // 2. Entry's own Date Range Check (within current month)
-          const entryDate = parseLocalDate(entry.startDate);
-          const currentMonthStart = new Date(currentYear, currentMonth, 1);
-          const currentMonthEnd = new Date(currentYear, currentMonth + 1, 0);
-          if (!(entryDate >= currentMonthStart && entryDate <= currentMonthEnd)) return false;
-
-          // 3. Skip "Not Alloted" entries
-          if (entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted') {
-            return false;
-          }
-
-          // 4. Client Filter
-          if (matrixFilters.client.length > 0) {
-            if (!entry.client || !matrixFilters.client.includes(entry.client)) {
-              return false;
-            }
-          }
-
-          // 5. Course Filter
-          if (matrixFilters.course.length > 0) {
-            if (!entry.course || !matrixFilters.course.includes(entry.course)) {
-              return false;
-            }
-          }
-
-          // 6. Type Filter (training/non-training/available)
-          if (matrixFilters.type === 'training' && entry.type !== 'training') {
-            return false;
-          }
-          if (matrixFilters.type === 'non-training' && entry.type !== 'non-training') {
-            return false;
-          }
           if (matrixFilters.type === 'available') {
-            // For available type, we don't want to show any entries (trainers should be available)
-            return false;
+        return entriesForTrainer.length === 0;
           }
 
-          // 7. Role Filter (TA/Trainer) - for training entries that have a role
-          if (matrixFilters.role !== 'all' && entry.type === 'training') {
-            if (!entry.role || entry.role !== matrixFilters.role) {
+      if (entriesForTrainer.length === 0) {
               return false;
             }
-          }
 
-          // 8. Non-Training Task Type Filter - for non-training entries
-          if (matrixFilters.nonTrainingTaskTypes && matrixFilters.nonTrainingTaskTypes.length > 0 && entry.type === 'non-training') {
-            if (!entry.taskType || !matrixFilters.nonTrainingTaskTypes.includes(entry.taskType)) {
+      return entriesForTrainer.some((entry) => {
+        if (
+          entry.client === 'Not Alloted' ||
+          entry.course === 'Not Alloted' ||
+          entry.role === 'Not Alloted'
+        ) {
               return false;
             }
-          }
-
-          // 9. Date range from matrixFilters (overall view filter)
-          if (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') {
-            const filterStartDate = parseLocalDate(matrixFilters.startDate);
-            if (entryDate < filterStartDate) return false;
-          }
-          if (matrixFilters.endDate && matrixFilters.endDate.trim() !== '') {
-            const filterEndDate = parseLocalDate(matrixFilters.endDate);
-            if (entryDate > filterEndDate) return false;
-          }
-
-          // If we reach here, this entry matches ALL the matrix filters
-          return true;
-        });
+        return matchesMatrixFilters(entry);
       });
-
-      // Special handling for 'available' type - show trainers who have NO entries in the current month
-      if (matrixFilters.type === 'available') {
-        const hasAnyEntriesInMonth = Object.values(scheduleData).some(entries => {
-          return entries.some(entry => {
-            if (entry.trainer === trainer.name) {
-              const entryDate = parseLocalDate(entry.startDate);
-              const currentMonthStart = new Date(currentYear, currentMonth, 1);
-              const currentMonthEnd = new Date(currentYear, currentMonth + 1, 0);
-              return entryDate >= currentMonthStart && entryDate <= currentMonthEnd;
-            }
-            return false;
-          });
-        });
-        return !hasAnyEntriesInMonth; // Show trainers who have NO schedules
-      }
-
-      return hasMatchingEntries;
     });
 
     return currentTrainers;
-  }, [trainers, matrixFilters, matrixSearchTerm, isMultiSelectMode, selectedTrainers, scheduleData, currentYear, currentMonth]);
-
-  // Memoize hasActiveFilters check
-  const hasActiveFilters = useMemo(() => {
-    return matrixFilters.specialization.length > 0 ||
-      matrixFilters.client.length > 0 ||
-      matrixFilters.course.length > 0 ||
-      matrixFilters.nonTrainingTaskTypes.length > 0 ||
-      matrixFilters.type !== 'all' ||
-      matrixFilters.role !== 'all' ||
-      (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') ||
-      (matrixFilters.endDate && matrixFilters.endDate.trim() !== '');
-  }, [matrixFilters]);
+  }, [
+    trainers,
+    matrixFilters,
+    matrixSearchTerm,
+    isMultiSelectMode,
+    selectedTrainers,
+    hasActiveFilters,
+    trainerMonthlyEntries,
+    matchesMatrixFilters,
+  ]);
 
   // Helper for daily section search/filter - memoized with useCallback
   const matchesDailySearch = useCallback((entryOrTrainer) => {
@@ -588,55 +609,17 @@ const TrainerMatrixView = React.memo(({
       const rawEntries = entriesByDateAndTrainer.get(trainerKey) || [];
       
       // Apply filters (much smaller set now)
-      const entriesForThisTrainerOnSelectedDay = rawEntries.filter(entry => {
-        // Skip "Not Alloted" entries
-        if (entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted') {
+      const entriesForThisTrainerOnSelectedDay = rawEntries.filter((entry) => {
+        if (
+          entry.client === 'Not Alloted' ||
+          entry.course === 'Not Alloted' ||
+          entry.role === 'Not Alloted'
+        ) {
           return false;
         }
 
-        // Apply matrix filters
-        if (matrixFilters.client.length > 0) {
-          if (!entry.client || !matrixFilters.client.includes(entry.client)) {
+        if (!matchesMatrixFilters(entry, dayDateStr)) {
             return false;
-          }
-        }
-
-        if (matrixFilters.course.length > 0) {
-          if (!entry.course || !matrixFilters.course.includes(entry.course)) {
-            return false;
-          }
-        }
-
-        if (matrixFilters.type === 'training' && entry.type !== 'training') {
-          return false;
-        }
-        if (matrixFilters.type === 'non-training' && entry.type !== 'non-training') {
-          return false;
-        }
-        if (matrixFilters.type === 'available') {
-          return false;
-        }
-
-        if (matrixFilters.role !== 'all' && entry.type === 'training') {
-          if (!entry.role || entry.role !== matrixFilters.role) {
-            return false;
-          }
-        }
-
-        if (matrixFilters.nonTrainingTaskTypes && matrixFilters.nonTrainingTaskTypes.length > 0 && entry.type === 'non-training') {
-          if (!entry.taskType || !matrixFilters.nonTrainingTaskTypes.includes(entry.taskType)) {
-            return false;
-          }
-        }
-
-        const currentDate = parseLocalDate(dayDateStr);
-        if (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') {
-          const filterStartDate = parseLocalDate(matrixFilters.startDate);
-          if (currentDate < filterStartDate) return false;
-        }
-        if (matrixFilters.endDate && matrixFilters.endDate.trim() !== '') {
-          const filterEndDate = parseLocalDate(matrixFilters.endDate);
-          if (currentDate > filterEndDate) return false;
         }
 
         return true;
@@ -741,7 +724,17 @@ const TrainerMatrixView = React.memo(({
       nonTrainingTrainers,
       availableTrainers
     };
-  }, [selectedDay, filteredTrainers, entriesByDateAndTrainer, currentYear, currentMonth, matrixFilters, matchesDailySearch, dailyFilterType, scheduleData, daysInMonth]);
+  }, [
+    selectedDay,
+    filteredTrainers,
+    entriesByDateAndTrainer,
+    currentYear,
+    currentMonth,
+    matrixFilters,
+    matchesMatrixFilters,
+    matchesDailySearch,
+    dailyFilterType,
+  ]);
 
   // getTrainerCategories function wrapper for backward compatibility
   const getTrainerCategories = useCallback((day) => {
@@ -775,64 +768,16 @@ const TrainerMatrixView = React.memo(({
         const rawEntries = entriesByDateAndTrainer.get(trainerKey) || [];
         
         // Apply filters (much smaller set now)
-        const entries = rawEntries.filter(entry => {
-          // Skip "Not Alloted" entries
-          if (entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted') {
+        const entries = rawEntries.filter((entry) => {
+          if (
+            entry.client === 'Not Alloted' ||
+            entry.course === 'Not Alloted' ||
+            entry.role === 'Not Alloted'
+          ) {
             return false;
           }
 
-          // Apply matrix filters
-          // Client Filter
-          if (matrixFilters.client.length > 0) {
-            if (!entry.client || !matrixFilters.client.includes(entry.client)) {
-              return false;
-            }
-          }
-
-          // Course Filter
-          if (matrixFilters.course.length > 0) {
-            if (!entry.course || !matrixFilters.course.includes(entry.course)) {
-              return false;
-            }
-          }
-
-          // Type Filter
-          if (matrixFilters.type === 'training' && entry.type !== 'training') {
-            return false;
-          }
-          if (matrixFilters.type === 'non-training' && entry.type !== 'non-training') {
-            return false;
-          }
-          if (matrixFilters.type === 'available') {
-            return false;
-          }
-
-          // Role Filter
-          if (matrixFilters.role !== 'all' && entry.type === 'training') {
-            if (!entry.role || entry.role !== matrixFilters.role) {
-              return false;
-            }
-          }
-
-          // Non-Training Task Type Filter
-          if (matrixFilters.nonTrainingTaskTypes && matrixFilters.nonTrainingTaskTypes.length > 0 && entry.type === 'non-training') {
-            if (!entry.taskType || !matrixFilters.nonTrainingTaskTypes.includes(entry.taskType)) {
-              return false;
-            }
-          }
-
-          // Date range filter
-          const currentDate = parseLocalDate(dayDateStr);
-          if (matrixFilters.startDate && matrixFilters.startDate.trim() !== '') {
-            const filterStartDate = parseLocalDate(matrixFilters.startDate);
-            if (currentDate < filterStartDate) return false;
-          }
-          if (matrixFilters.endDate && matrixFilters.endDate.trim() !== '') {
-            const filterEndDate = parseLocalDate(matrixFilters.endDate);
-            if (currentDate > filterEndDate) return false;
-          }
-
-          return true;
+          return matchesMatrixFilters(entry, dayDateStr);
         });
         
         map.set(key, {
@@ -849,7 +794,7 @@ const TrainerMatrixView = React.memo(({
       });
     });
     return map;
-  }, [filteredTrainers, daysArray, entriesByDateAndTrainer, currentYear, currentMonth, matrixFilters]);
+  }, [filteredTrainers, daysArray, entriesByDateAndTrainer, currentYear, currentMonth, matchesMatrixFilters]);
 
   const handleScheduleTask = (trainer) => {
     if (onScheduleTask) {
@@ -892,7 +837,7 @@ const TrainerMatrixView = React.memo(({
             const cellKeyForMap = `${trainer.id}-${parseInt(day)}`;
             const cellData = cellDataMap.get(cellKeyForMap);
             if (cellData && cellData.hasEntries) {
-              newSelected.add(cellKey);
+            newSelected.add(cellKey);
             }
           }
         });
@@ -919,7 +864,7 @@ const TrainerMatrixView = React.memo(({
             const cellKeyForMap = `${trainer.id}-${parseInt(day)}`;
             const cellData = cellDataMap.get(cellKeyForMap);
             if (cellData && cellData.hasEntries) {
-              newSelected.add(cellKey);
+            newSelected.add(cellKey);
             }
           }
         });
@@ -933,6 +878,7 @@ const TrainerMatrixView = React.memo(({
     
     const newScheduleData = { ...scheduleData };
     let deletedCount = 0;
+    const tasksToRemove = new Map();
     
     selectedCells.forEach(cellKey => {
       const [year, month, trainerId, day] = cellKey.split('-');
@@ -945,6 +891,12 @@ const TrainerMatrixView = React.memo(({
           const cellKeyForMap = `${trainer.id}-${parseInt(day)}`;
           const cellData = cellDataMap.get(cellKeyForMap);
           const entriesForTrainer = cellData ? cellData.entries : [];
+          
+          entriesForTrainer.forEach(entry => {
+            if (entry?.id) {
+              tasksToRemove.set(entry.id, entry);
+            }
+          });
           
           // Remove all entries that match the trainer and have entries on this date
           const originalLength = newScheduleData[date].length;
@@ -981,6 +933,18 @@ const TrainerMatrixView = React.memo(({
       await saveScheduleData(newScheduleData);
       setSelectedCells(new Set());
       setBulkSelectMode(false);
+      
+      for (const [taskId, entry] of tasksToRemove) {
+        try {
+          await cancelPendingRequestsForTask(taskId, {
+            reason: 'Associated schedule task was removed',
+            trainerName: entry.trainer,
+            taskLabel: entry.taskDetails || entry.client || entry.course || entry.role
+          });
+        } catch (requestError) {
+          console.error('⚠️ Failed to cancel pending clock requests for deleted task:', requestError);
+        }
+      }
       
       toast({ 
         title: 'Bulk Delete Success', 
@@ -1024,6 +988,192 @@ const TrainerMatrixView = React.memo(({
 
   // Calculate responsive grid columns based on screen size and compact view
 
+  useEffect(() => {
+    if (selectedDay) {
+      setActiveDailyPanel('training');
+    }
+  }, [selectedDay]);
+
+  const ActionIconButton = ({ onClick, label, icon: Icon, variant = 'neutral', accent = 'blue' }) => {
+    const accentClassMap = {
+      blue: 'text-blue-600 hover:bg-blue-100/70 focus:ring-blue-500',
+      orange: 'text-orange-600 hover:bg-orange-100/70 focus:ring-orange-500',
+      green: 'text-green-600 hover:bg-green-100/70 focus:ring-green-500'
+    };
+    const base = 'inline-flex items-center justify-center rounded-full p-2 bg-white/80 shadow-sm border border-white/70 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1';
+    const variantClasses = variant === 'danger'
+      ? 'text-red-600 hover:bg-red-100/80 focus:ring-red-500'
+      : (accentClassMap[accent] || accentClassMap.blue);
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`${base} ${variantClasses}`}
+        aria-label={label}
+        title={label}
+      >
+        <Icon className="w-4 h-4" />
+      </button>
+    );
+  };
+
+  const accentTokens = {
+    blue: {
+      headerBg: 'bg-blue-50/70',
+      cardBg: 'bg-blue-50/40',
+      textPrimary: 'text-blue-900',
+      badge: 'bg-blue-100 text-blue-700',
+      dot: 'bg-blue-500',
+      border: 'border-blue-500/40'
+    },
+    orange: {
+      headerBg: 'bg-orange-50/70',
+      cardBg: 'bg-orange-50/40',
+      textPrimary: 'text-orange-900',
+      badge: 'bg-orange-100 text-orange-700',
+      dot: 'bg-orange-500',
+      border: 'border-orange-500/40'
+    },
+    green: {
+      headerBg: 'bg-green-50/70',
+      cardBg: 'bg-green-50/40',
+      textPrimary: 'text-green-900',
+      badge: 'bg-green-100 text-green-700',
+      dot: 'bg-green-500',
+      border: 'border-green-500/40'
+    }
+  };
+
+  const getHighlightBorder = (accent) => accentTokens[accent]?.border || 'border-gray-200';
+  const getPrimaryText = (accent) => accentTokens[accent]?.textPrimary || 'text-gray-900';
+  const getCardBackground = (accent) => accentTokens[accent]?.cardBg || 'bg-white';
+  const getBadgeStyle = (accent) => accentTokens[accent]?.badge || 'bg-gray-100 text-gray-600';
+  const getHeaderBg = (accent) => accentTokens[accent]?.headerBg || 'bg-gray-50';
+  const getDotStyle = (accent) => accentTokens[accent]?.dot || 'bg-gray-500';
+  const getBorderStyle = (accent) => accentTokens[accent]?.border || 'border-gray-200';
+
+  const renderDailySectionItems = (section) => {
+    if (!trainerCategoriesMemo) {
+      return <p className="text-sm text-muted-foreground">No data for this date</p>;
+    }
+
+    if (!section.items || section.items.length === 0) {
+      return <p className="text-sm text-muted-foreground">{section.emptyLabel}</p>;
+    }
+
+    const dateForSelectedDay = selectedDay
+      ? `${currentYear}-${pad2(currentMonth + 1)}-${pad2(selectedDay)}`
+      : null;
+
+    if (section.key === 'available') {
+      return section.items.map((trainer, index) => (
+        <div
+          key={trainer.id || `${trainer.name}-${index}`}
+          className={`flex w-full items-center justify-between gap-3 rounded-xl border ${accentTokens[section.accent].border} ${accentTokens[section.accent].cardBg} p-3 shadow-sm`}
+        >
+          <div className="min-w-0">
+            <p className={`font-semibold ${getPrimaryText(section.accent)} truncate`}>{trainer.name}</p>
+            <p className="text-xs text-gray-600 mt-0.5">Specialization: {trainer.specialization || 'Not specified'}</p>
+          </div>
+          <Button
+            onClick={() => {
+              setSelectedDay(null);
+              onScheduleTask({
+                trainer: { name: trainer.name },
+                date: dateForSelectedDay
+              });
+            }}
+            className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-3 py-2 text-sm rounded-lg"
+          >
+            <PlusCircle className="w-4 h-4" />
+            <span className="hidden sm:inline">Schedule</span>
+          </Button>
+        </div>
+      ));
+    }
+
+    return section.items.map((entry) => (
+      <div
+        key={entry.id}
+        className={`relative flex w-full items-start gap-3 rounded-xl border ${accentTokens[section.accent].border} ${accentTokens[section.accent].cardBg} p-4 shadow-sm`}
+      >
+        <span className={`absolute left-0 top-3 bottom-3 w-1 rounded-full ${accentTokens[section.accent].dot}`}></span>
+        <div className="flex items-start gap-3 pl-4 pr-16">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={selectedTaskIds.includes(entry.id)}
+            onChange={() => toggleTaskSelection(entry.id)}
+          />
+          <div className="min-w-0 space-y-1">
+            <p className={`font-semibold ${getPrimaryText(section.accent)} truncate`}>{entry.trainer}</p>
+            {section.key === 'training' ? (
+              <>
+                <div className="flex items-center gap-1 text-xs text-gray-600"><span className="text-gray-400">Client:</span><span className="font-medium text-gray-700">{entry.client}</span></div>
+                <div className="flex items-center gap-1 text-xs text-gray-600"><span className="text-gray-400">Course:</span><span className="font-medium text-gray-700">{entry.course}</span></div>
+                {entry.role && <div className="flex items-center gap-1 text-xs text-gray-600"><span className="text-gray-400">Role:</span><span className="font-medium text-gray-700">{entry.role}</span></div>}
+                {entry.description && <div className="text-xs text-gray-500">Notes: {entry.description}</div>}
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-1 text-xs text-gray-600"><span className="text-gray-400">Task:</span><span className="font-medium text-gray-700">{entry.taskDetails}</span></div>
+                <div className="flex items-center gap-1 text-xs text-gray-600"><span className="text-gray-400">Type:</span><span className="font-medium text-gray-700">{entry.taskType}</span></div>
+                {entry.description && <div className="text-xs text-gray-500">Notes: {entry.description}</div>}
+              </>
+            )}
+          </div>
+        </div>
+        <div className="absolute top-1/2 right-4 -translate-y-1/2 flex items-center gap-2">
+          <ActionIconButton
+            onClick={() => {
+              const dayValue = selectedDay;
+              setSelectedDay(null);
+              onEditTask(entry, dayValue);
+            }}
+            label="Edit assignment"
+            icon={Edit3}
+            accent={section.accent}
+          />
+          <ActionIconButton
+            onClick={() => {
+              const dayValue = selectedDay;
+              setSelectedDay(null);
+              onDeleteEntry(entry, dayValue);
+            }}
+            label="Delete assignment"
+            icon={Trash2}
+            variant="danger"
+          />
+        </div>
+      </div>
+    ));
+  };
+
+  const dailySections = useMemo(() => {
+    return [
+      {
+        key: 'training',
+        title: 'Training Assigned',
+        accent: 'blue',
+        items: trainerCategoriesMemo?.trainingTrainers ?? [],
+        emptyLabel: 'No training assignments for this date'
+      },
+      {
+        key: 'non-training',
+        title: 'Non-Training Tasks',
+        accent: 'orange',
+        items: trainerCategoriesMemo?.nonTrainingTrainers ?? [],
+        emptyLabel: 'No non-training tasks for this date'
+      },
+      {
+        key: 'available',
+        title: 'Available Trainers',
+        accent: 'green',
+        items: trainerCategoriesMemo?.availableTrainers ?? [],
+        emptyLabel: 'No available trainers for this date'
+      }
+    ];
+  }, [trainerCategoriesMemo]);
 
   return (
     <div className="space-y-6">
@@ -1408,6 +1558,7 @@ const TrainerMatrixView = React.memo(({
                           toggleCellSelection(trainer.id, day);
                         } else {
                           setSelectedDay(day);
+                          setActiveDailyPanel('training');
                         }
                       }}
                     >
@@ -1437,21 +1588,45 @@ const TrainerMatrixView = React.memo(({
         </div>
       </div>
 
-      {/* Three sections when a day is selected - only in matrix view */}
-      {selectedDay && (
-        <div className="mt-8 space-y-6">
-          {/* Header row with schedule title and search/filter UI right-aligned for daily view */}
-          <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
-            <div className="text-2xl font-semibold text-gray-800">
-              Schedule for {new Date(currentYear, currentMonth, selectedDay).toLocaleDateString('en-US', {
+      <Dialog
+        open={!!selectedDay}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedDay(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-5xl w-full p-0 overflow-hidden">
+          <AnimatePresence mode="wait" initial={false}>
+            {selectedDay && (
+              <motion.div
+                key={selectedDay}
+                className="flex flex-col max-h-[85vh]"
+                initial={{ opacity: 0, y: 24 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 24 }}
+                transition={{ type: 'spring', damping: 24, stiffness: 320, mass: 0.9 }}
+              >
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <DialogHeader className="p-0 space-y-1">
+                <DialogTitle className="text-xl font-semibold text-gray-900">
+                  {selectedDay
+                    ? `Schedule for ${new Date(currentYear, currentMonth, selectedDay).toLocaleDateString('en-US', {
                 weekday: 'long',
                 year: 'numeric',
                 month: 'long',
                 day: 'numeric'
-              })}
+                      })}`
+                    : 'Schedule Details'}
+                </DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground">
+                  Review and manage trainer assignments for the selected date.
+                </DialogDescription>
+              </DialogHeader>
             </div>
-            <div className="flex items-center gap-3 relative">
-              {/* Enhanced Search Input */}
+            <div className="px-6 py-4 space-y-4 overflow-y-auto">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div className="flex items-center gap-3">
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
                   <Search className="w-4 h-4" />
@@ -1461,19 +1636,19 @@ const TrainerMatrixView = React.memo(({
                   placeholder="Search trainers, clients, courses, tasks..."
                   value={dailySearchTerm}
                   onChange={e => setDailySearchTerm(e.target.value)}
-                  className="pl-9 pr-8 py-2 rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-64 md:w-80 max-w-xs shadow-sm text-sm"
+                      className="pl-9 pr-8 py-2 rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-64 md:w-80 shadow-sm text-sm"
                 />
                 {dailySearchTerm && (
                   <button
                     onClick={() => setDailySearchTerm('')}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                        aria-label="Clear search"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 )}
               </div>
-              
-              {/* Enhanced Filter Button */}
+                  <div className="relative">
               <button
                 className={`px-3 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 flex items-center gap-2 text-sm ${dailyFilterOpen ? 'ring-2 ring-blue-500 border-blue-500 bg-blue-50' : ''}`}
                 onClick={() => setDailyFilterOpen(v => !v)}
@@ -1485,11 +1660,8 @@ const TrainerMatrixView = React.memo(({
                   <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
                 )}
               </button>
-              
-              {/* Enhanced Filter Dropdown - More Compact */}
               {dailyFilterOpen && (
-                <div className="absolute right-0 top-12 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-64 animate-fade-in">
-                  {/* Header */}
+                      <div className="absolute right-0 mt-2 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-64 animate-fade-in">
                   <div className="flex justify-between items-center mb-3 pb-2 border-b border-gray-100">
                     <div className="flex items-center gap-2">
                       <Filter className="w-4 h-4 text-blue-600" />
@@ -1498,32 +1670,47 @@ const TrainerMatrixView = React.memo(({
                     <button 
                       onClick={() => setDailyFilterOpen(false)} 
                       className="p-1 rounded-lg hover:bg-gray-100 transition-colors"
+                            aria-label="Close filters"
                     >
                       <CloseIcon className="w-3 h-3 text-gray-500" />
                     </button>
                   </div>
-                  
-                  {/* Search Fields Section - Compact */}
                   <div className="mb-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-medium text-xs text-gray-700">Search Fields</span>
                       <div className="flex gap-1">
                         <button
                           type="button"
-                          onClick={() => setDailyFilterFields({
-                            name: true, client: true, course: true, role: true,
-                            taskDetails: true, taskType: true, description: true, specialization: true
-                          })}
+                                onClick={() =>
+                                  setDailyFilterFields({
+                                    name: true,
+                                    client: true,
+                                    course: true,
+                                    role: true,
+                                    taskDetails: true,
+                                    taskType: true,
+                                    description: true,
+                                    specialization: true
+                                  })
+                                }
                           className="px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
                         >
                           All
                         </button>
                         <button
                           type="button"
-                          onClick={() => setDailyFilterFields({
-                            name: false, client: false, course: false, role: false,
-                            taskDetails: false, taskType: false, description: false, specialization: false
-                          })}
+                                onClick={() =>
+                                  setDailyFilterFields({
+                                    name: false,
+                                    client: false,
+                                    course: false,
+                                    role: false,
+                                    taskDetails: false,
+                                    taskType: false,
+                                    description: false,
+                                    specialization: false
+                                  })
+                                }
                           className="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
                         >
                           None
@@ -1531,140 +1718,70 @@ const TrainerMatrixView = React.memo(({
                       </div>
                     </div>
                     <div className="grid grid-cols-1 gap-1.5">
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
+                            {[
+                              ['name', 'Name'],
+                              ['client', 'Client'],
+                              ['course', 'Course'],
+                              ['role', 'Role'],
+                              ['taskDetails', 'Task Details'],
+                              ['taskType', 'Task Type'],
+                              ['description', 'Description'],
+                              ['specialization', 'Specialization']
+                            ].map(([key, label]) => (
+                              <label
+                                key={key}
+                                className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors"
+                              >
                         <input 
                           type="checkbox" 
-                          checked={dailyFilterFields.name} 
-                          onChange={e => setDailyFilterFields(f => ({...f, name: e.target.checked}))}
+                                  checked={dailyFilterFields[key]}
+                                  onChange={e => setDailyFilterFields(f => ({ ...f, [key]: e.target.checked }))}
                           className="w-3 h-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
                         /> 
-                        <span className="text-gray-700">Name</span>
+                                <span className="text-gray-700">{label}</span>
                       </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={dailyFilterFields.client} 
-                          onChange={e => setDailyFilterFields(f => ({...f, client: e.target.checked}))}
-                          className="w-3 h-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Client</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={dailyFilterFields.course} 
-                          onChange={e => setDailyFilterFields(f => ({...f, course: e.target.checked}))}
-                          className="w-3 h-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Course</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={dailyFilterFields.role} 
-                          onChange={e => setDailyFilterFields(f => ({...f, role: e.target.checked}))}
-                          className="w-3 h-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Role</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={dailyFilterFields.taskDetails} 
-                          onChange={e => setDailyFilterFields(f => ({...f, taskDetails: e.target.checked}))}
-                          className="w-3 h-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Task Details</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={dailyFilterFields.taskType} 
-                          onChange={e => setDailyFilterFields(f => ({...f, taskType: e.target.checked}))}
-                          className="w-3 h-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Task Type</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={dailyFilterFields.description} 
-                          onChange={e => setDailyFilterFields(f => ({...f, description: e.target.checked}))}
-                          className="w-3 h-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Description</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={dailyFilterFields.specialization} 
-                          onChange={e => setDailyFilterFields(f => ({...f, specialization: e.target.checked}))}
-                          className="w-3 h-3 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Specialization</span>
-                      </label>
+                            ))}
                     </div>
                   </div>
-                  
-                  {/* Section Type Section - Compact */}
                   <div className="mb-4">
                     <span className="font-medium text-xs text-gray-700 mb-2 block">Section Type</span>
                     <div className="space-y-1">
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
+                            {[
+                              ['all', 'All Sections'],
+                              ['training', 'Training Only'],
+                              ['non-training', 'Non-Training Only'],
+                              ['available', 'Available Only']
+                            ].map(([value, label]) => (
+                              <label
+                                key={value}
+                                className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors"
+                              >
                         <input 
                           type="radio" 
                           name="dailyFilterType" 
-                          value="all" 
-                          checked={dailyFilterType === 'all'} 
-                          onChange={() => setDailyFilterType('all')}
+                                  value={value}
+                                  checked={dailyFilterType === value}
+                                  onChange={() => setDailyFilterType(value)}
                           className="w-3 h-3 text-blue-600 border-gray-300 focus:ring-blue-500"
                         /> 
-                        <span className="text-gray-700">All Sections</span>
+                                <span className="text-gray-700">{label}</span>
                       </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="radio" 
-                          name="dailyFilterType" 
-                          value="training" 
-                          checked={dailyFilterType === 'training'} 
-                          onChange={() => setDailyFilterType('training')}
-                          className="w-3 h-3 text-blue-600 border-gray-300 focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Training Only</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="radio" 
-                          name="dailyFilterType" 
-                          value="non-training" 
-                          checked={dailyFilterType === 'non-training'} 
-                          onChange={() => setDailyFilterType('non-training')}
-                          className="w-3 h-3 text-blue-600 border-gray-300 focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Non-Training Only</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-gray-50 p-1.5 rounded transition-colors">
-                        <input 
-                          type="radio" 
-                          name="dailyFilterType" 
-                          value="available" 
-                          checked={dailyFilterType === 'available'} 
-                          onChange={() => setDailyFilterType('available')}
-                          className="w-3 h-3 text-blue-600 border-gray-300 focus:ring-blue-500"
-                        /> 
-                        <span className="text-gray-700">Available Only</span>
-                      </label>
+                            ))}
                     </div>
                   </div>
-                  
-                  {/* Action Buttons - Compact */}
                   <div className="flex justify-between items-center pt-3 border-t border-gray-100">
                     <button
                       className="px-3 py-1.5 rounded-lg bg-gray-100 text-gray-700 text-xs hover:bg-gray-200 transition-colors font-medium"
                       onClick={() => { 
                         setDailyFilterFields({ 
-                          name: true, client: true, course: true, role: true, 
-                          taskDetails: true, taskType: true, description: true, specialization: true 
+                                name: true,
+                                client: true,
+                                course: true,
+                                role: true,
+                                taskDetails: true,
+                                taskType: true,
+                                description: true,
+                                specialization: true
                         }); 
                         setDailyFilterType('all'); 
                       }}
@@ -1684,19 +1801,31 @@ const TrainerMatrixView = React.memo(({
               )}
             </div>
           </div>
-          {/* Bulk Delete Button and Select All for matrix view daily list */}
-          {trainerCategoriesMemo && (() => {
+
+                <div className="flex gap-2">
+                  {["training", "non-training", "available"].map(key => {
+                    const section = dailySections.find(s => s.key === key);
+                    return (
+                      <div key={key} className="px-3 py-1.5 rounded-full bg-slate-100 text-xs font-medium text-slate-600">
+                        {section?.title}: {section?.items.length ?? 0}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {(() => {
             const allTaskIds = [
-              ...trainerCategoriesMemo.trainingTrainers.map(e => e.id),
-              ...trainerCategoriesMemo.nonTrainingTrainers.map(e => e.id)
+                  ...((trainerCategoriesMemo?.trainingTrainers ?? []).map(e => e.id)),
+                  ...((trainerCategoriesMemo?.nonTrainingTrainers ?? []).map(e => e.id))
             ];
             const allSelected = allTaskIds.length > 0 && allTaskIds.every(id => selectedTaskIds.includes(id));
             return (
-              <div className="mb-4 flex items-center gap-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <Button onClick={handleBulkDelete} variant="destructive" disabled={selectedTaskIds.length === 0}>
                   Delete Selected ({selectedTaskIds.length})
                 </Button>
-                <label className="flex items-center gap-2">
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
                   <input
                     type="checkbox"
                     checked={allSelected}
@@ -1708,98 +1837,59 @@ const TrainerMatrixView = React.memo(({
               </div>
             );
           })()}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Training Assigned Trainers Section */}
-            <div className="bg-white rounded-lg shadow p-4 border border-border/50">
-              <h3 className="text-lg font-semibold mb-4 text-blue-600">Training Assigned Trainers</h3>
-              <div className="space-y-3">
-                {trainerCategoriesMemo && trainerCategoriesMemo.trainingTrainers.map((entry, index) => (
-                  <div key={index} className="bg-blue-50 p-3 rounded-lg flex justify-between items-center">
+
+              <div className="hidden md:grid md:grid-cols-3 gap-4">
+                {dailySections.map(section => (
+                  <div key={section.key} className="flex flex-col rounded-2xl border border-gray-200 bg-white shadow-sm h-[60vh]">
+                    <div className={`flex items-center justify-between px-4 py-3 border-b ${getBorderStyle(section.accent)}`}>
                     <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={selectedTaskIds.includes(entry.id)}
-                        onChange={() => toggleTaskSelection(entry.id)}
-                      />
-                      <div>
-                        <p className="font-medium">{entry.trainer}</p>
-                        <p className="text-sm text-gray-600">Client: {entry.client}</p>
-                        <p className="text-sm text-gray-600">Course: {entry.course}</p>
-                        <p className="text-sm text-gray-600">Role: {entry.role}</p>
+                        <span className={`w-2 h-2 rounded-full ${getDotStyle(section.accent)}`}></span>
+                        <span className="text-sm font-semibold text-gray-900">{section.title}</span>
                       </div>
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${getBadgeStyle(section.accent)}`}>
+                        {section.items.length}
+                      </span>
                     </div>
-                    <div className="flex gap-2">
-                      <Button onClick={() => onEditTask(entry, selectedDay)} variant="outline">Edit</Button>
-                      <Button onClick={() => onDeleteEntry(entry, selectedDay)} variant="destructive">Delete</Button>
+                    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+                      {renderDailySectionItems(section)}
                     </div>
                   </div>
                 ))}
-                {(!trainerCategoriesMemo || trainerCategoriesMemo.trainingTrainers.length === 0) && (
-                  <p className="text-gray-500 text-sm">No training assignments for this date</p>
-                )}
               </div>
-            </div>
-            {/* Non-Training Task Allocated Trainers Section */}
-            <div className="bg-white rounded-lg shadow p-4 border border-border/50">
-              <h3 className="text-lg font-semibold mb-4 text-orange-600">Non-Training Task Allocated Trainers</h3>
-              <div className="space-y-3">
-                {trainerCategoriesMemo && trainerCategoriesMemo.nonTrainingTrainers.map((entry, index) => (
-                  <div key={index} className="bg-orange-50 p-3 rounded-lg flex justify-between items-center">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={selectedTaskIds.includes(entry.id)}
-                        onChange={() => toggleTaskSelection(entry.id)}
-                      />
-                      <div>
-                        <p className="font-medium">{entry.trainer}</p>
-                        <p className="text-sm text-gray-600">Task: {entry.taskDetails}</p>
-                        <p className="text-sm text-gray-600">Type: {entry.taskType}</p>
-                        <p className="text-sm text-gray-600">Description: {entry.description}</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button onClick={() => onEditTask(entry, selectedDay)} variant="outline">Edit</Button>
-                      <Button onClick={() => onDeleteEntry(entry, selectedDay)} variant="destructive">Delete</Button>
-                    </div>
-                  </div>
-                ))}
-                {(!trainerCategoriesMemo || trainerCategoriesMemo.nonTrainingTrainers.length === 0) && (
-                  <p className="text-gray-500 text-sm">No non-training tasks for this date</p>
-                )}
-              </div>
-            </div>
-            {/* Available Trainers Section */}
-            <div className="bg-white rounded-lg shadow p-4 border border-border/50">
-              <h3 className="text-lg font-semibold mb-4 text-green-600">Available Trainers</h3>
-              <div className="space-y-3">
-                {trainerCategoriesMemo && trainerCategoriesMemo.availableTrainers.map((trainer, index) => (
-                  <div key={index} className="bg-green-50 p-3 rounded-lg flex justify-between items-center">
-                    <div>
-                      <p className="font-medium">{trainer.name}</p>
-                      <p className="text-sm text-gray-600">Specialization: {trainer.specialization || 'Not specified'}</p>
-                    </div>
-                    <Button
-                      onClick={() => {
-                        onScheduleTask({
-                          trainer: { name: trainer.name }, // Pass trainer object with name
-                          date: `${currentYear}-${pad2(currentMonth + 1)}-${pad2(selectedDay)}`
-                        });
-                      }}
-                      className="bg-green-600 hover:bg-green-700 text-white"
+
+              <div className="md:hidden space-y-3">
+                {dailySections.map(section => (
+                  <div key={section.key} className="border border-gray-200 rounded-2xl shadow-sm bg-white overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setActiveDailyPanel(prev => (prev === section.key ? null : section.key))}
+                      className="w-full flex items-center justify-between px-4 py-3 text-left"
                     >
-                      Schedule Task
-                    </Button>
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${getDotStyle(section.accent)}`}></span>
+                        <span className="text-sm font-semibold text-gray-900">{section.title}</span>
+            </div>
+                    <div className="flex items-center gap-2">
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${getBadgeStyle(section.accent)}`}>
+                          {section.items.length}
+                        </span>
+                        <ChevronDown className={`w-4 h-4 transition-transform ${activeDailyPanel === section.key ? 'rotate-180' : ''}`} />
+                      </div>
+                    </button>
+                    {activeDailyPanel === section.key && (
+                      <div className="px-4 pb-4 space-y-3 max-h-[55vh] overflow-y-auto">
+                        {renderDailySectionItems(section)}
+                    </div>
+                    )}
                   </div>
                 ))}
-                {(!trainerCategoriesMemo || trainerCategoriesMemo.availableTrainers.length === 0) && (
-                  <p className="text-gray-500 text-sm">No available trainers for this date</p>
-                )}
               </div>
             </div>
-          </div>
-        </div>
-      )}
+            </motion.div>
+            )}
+          </AnimatePresence>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }, (prevProps, nextProps) => {

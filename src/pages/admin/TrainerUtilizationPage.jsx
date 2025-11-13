@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { 
   BarChart3, 
@@ -10,17 +11,24 @@ import {
   Clock, 
   Target,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Loader2
 } from 'lucide-react';
 import { useToast } from "@/components/ui/use-toast";
 import { loadScheduleData, subscribeToScheduleUpdates } from '../../utils/firestoreSchedule';
 import { loadTrainerData } from '../../utils/firestoreTrainers';
+import { formatDateForDisplay } from '@/utils/timezoneUtils';
 import * as XLSX from 'xlsx';
+import { cn } from '@/lib/utils';
+import { cardStyles, cardPadding } from '@/styles/designSystem';
+import { LoadingSkeleton } from '@/components/ui/loading-skeletons';
 
 const TrainerUtilizationPage = () => {
+  const { setCommandState } = useOutletContext();
   const { toast } = useToast();
   const [scheduleData, setScheduleData] = useState({});
   const [trainerList, setTrainerList] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [timePeriod, setTimePeriod] = useState('currentMonth');
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
@@ -31,18 +39,30 @@ const TrainerUtilizationPage = () => {
 
   // Load schedule and trainer data
   useEffect(() => {
+    setLoading(true);
     const unsubscribe = subscribeToScheduleUpdates((data) => {
       setScheduleData(data || {});
     });
 
     async function fetchTrainers() {
+      try {
       const data = await loadTrainerData();
       setTrainerList(data || []);
+      } catch (error) {
+        console.error('Error loading trainers:', error);
+        toast({
+          title: 'Error',
+          description: 'Failed to load trainers. Please try again.',
+          variant: 'destructive'
+        });
+      } finally {
+        setLoading(false);
+      }
     }
     fetchTrainers();
 
     return () => unsubscribe();
-  }, []);
+  }, [toast]);
 
   // Filter active trainers only
   const activeTrainers = useMemo(() => {
@@ -202,8 +222,13 @@ const TrainerUtilizationPage = () => {
   // Export utilization data
   const handleExport = () => {
     const { start, end } = getDateRange;
+    // Format dates using timezone-aware formatting
+    const formatDate = (date) => {
+      const dateStr = date.toISOString().split('T')[0];
+      return formatDateForDisplay(dateStr, 'MMM d, yyyy');
+    };
     const periodText = timePeriod === 'custom' 
-      ? `${start.toLocaleDateString()} to ${end.toLocaleDateString()}`
+      ? `${formatDate(start)} to ${formatDate(end)}`
       : timePeriod === 'currentWeek' ? 'Current Week'
       : timePeriod === 'currentMonth' ? 'Current Month'
       : 'All Time';
@@ -231,6 +256,73 @@ const TrainerUtilizationPage = () => {
     });
   };
 
+  // Set up command ribbon
+  useEffect(() => {
+    const stats = summaryStats || {
+      averageUtilization: 0,
+      totalTrainers: 0,
+      highEfficiency: 0,
+      mediumEfficiency: 0,
+      lowEfficiency: 0
+    };
+
+    setCommandState({
+      title: 'Trainer Utilization',
+      description: 'Track trainer efficiency and resource utilization across different time periods.',
+      actions: (
+        <>
+          <Button onClick={() => setShowFilters(!showFilters)} variant="outline" size="sm" className="flex items-center gap-2 whitespace-nowrap">
+            <Filter className="h-4 w-4" />
+            Filters
+          </Button>
+          <Button onClick={handleExport} size="sm" className="flex items-center gap-2 whitespace-nowrap">
+            <Download className="h-4 w-4" />
+            Export
+          </Button>
+        </>
+      ),
+      metrics: [
+        <div key="avg" className={cn(cardStyles.surface, cardPadding)}>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-slate-500">Avg Utilization</p>
+              <p className="text-2xl font-bold text-slate-900 mt-1">{stats.averageUtilization}%</p>
+            </div>
+            <TrendingUp className="h-8 w-8 text-indigo-600" />
+          </div>
+        </div>,
+        <div key="total" className={cn(cardStyles.surface, cardPadding)}>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-slate-500">Total Trainers</p>
+              <p className="text-2xl font-bold text-slate-900 mt-1">{stats.totalTrainers}</p>
+            </div>
+            <Users className="h-8 w-8 text-indigo-600" />
+          </div>
+        </div>,
+        <div key="high" className={cn(cardStyles.surface, cardPadding)}>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-slate-500">High Efficiency</p>
+              <p className="text-2xl font-bold text-emerald-600 mt-1">{stats.highEfficiency}</p>
+            </div>
+            <Target className="h-8 w-8 text-emerald-600" />
+          </div>
+        </div>,
+        <div key="low" className={cn(cardStyles.surface, cardPadding)}>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-slate-500">Low Efficiency</p>
+              <p className="text-2xl font-bold text-rose-600 mt-1">{stats.lowEfficiency}</p>
+            </div>
+            <Clock className="h-8 w-8 text-rose-600" />
+          </div>
+        </div>,
+      ],
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summaryStats, setCommandState]);
+
   const getEfficiencyColor = (efficiency) => {
     switch (efficiency) {
       case 'High': return 'bg-green-100 text-green-800 border-green-200';
@@ -246,31 +338,12 @@ const TrainerUtilizationPage = () => {
     return 'text-red-600';
   };
 
+  if (loading) {
+    return <LoadingSkeleton message="Loading utilization data..." />;
+  }
+
   return (
-    <div className="p-6 bg-muted/5 rounded-lg min-h-full">
-      {/* Header Section */}
-      <div className="bg-white rounded-lg shadow-sm border border-border/50 p-4 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
-              <BarChart3 className="w-4 h-4 text-blue-600" />
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900">Trainer Utilization</h2>
-              <p className="text-xs text-gray-500">Track trainer efficiency and resource utilization</p>
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={() => setShowFilters(!showFilters)} variant="outline" size="sm" className="flex items-center gap-2">
-              <Filter className="w-3 h-3" />
-              Filters
-            </Button>
-            <Button onClick={handleExport} size="sm" className="flex items-center gap-2">
-              <Download className="w-3 h-3" />
-              Export
-            </Button>
-          </div>
-        </div>
+    <div className="space-y-6">
 
         {/* Filters Section */}
         {showFilters && (
@@ -352,48 +425,6 @@ const TrainerUtilizationPage = () => {
                     <span className="truncate">{trainer.name}</span>
                   </label>
                 ))}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Summary Statistics */}
-      {summaryStats && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div className="bg-white rounded-lg shadow-sm border border-border/50 p-3">
-            <div className="flex items-center space-x-2">
-              <div className="w-6 h-6 bg-blue-100 rounded-lg flex items-center justify-center">
-                <TrendingUp className="w-3 h-3 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500">Avg Utilization</p>
-                <p className="text-lg font-semibold text-gray-900">{summaryStats.averageUtilization}%</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm border border-border/50 p-3">
-            <div className="flex items-center space-x-2">
-              <div className="w-6 h-6 bg-purple-100 rounded-lg flex items-center justify-center">
-                <Users className="w-3 h-3 text-purple-600" />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500">Active Trainers</p>
-                <p className="text-lg font-semibold text-gray-900">{summaryStats.totalTrainers}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm border border-border/50 p-3">
-            <div className="flex items-center space-x-2">
-              <div className="w-6 h-6 bg-yellow-100 rounded-lg flex items-center justify-center">
-                <Target className="w-3 h-3 text-yellow-600" />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500">High Efficiency</p>
-                <p className="text-lg font-semibold text-gray-900">{summaryStats.highEfficiency}</p>
-              </div>
             </div>
           </div>
         </div>

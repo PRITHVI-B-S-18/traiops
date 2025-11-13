@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { useToast } from '@/components/ui/use-toast';
-import { Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Loader2, AlertCircle, CheckCircle2, Eye, EyeOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from '../firebase';
@@ -19,6 +19,7 @@ import vector5 from '../assets/figma/Vector-5.png';
 const LoginPage = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
@@ -38,8 +39,11 @@ const LoginPage = () => {
   // Redirect if already logged in
   useEffect(() => {
     if (!authLoading && user) {
-      // Determine redirect based on user role or default to admin
-      const redirectPath = user.role === 'trainer' ? '/trainer/schedule' : '/admin/schedule';
+      // Determine redirect based on user role
+      const redirectPath = 
+        user.role === 'admin' ? '/admin/schedule' :
+        user.role === 'program_manager' ? '/program-manager/dashboard' :
+        '/trainer/schedule';
       navigate(redirectPath, { replace: true });
     }
   }, [user, authLoading, navigate]);
@@ -115,6 +119,12 @@ const LoginPage = () => {
           title: 'Invalid Credentials',
           message: 'The email or password you entered is incorrect. Please verify your credentials and try again.',
           icon: '⚠️'
+        };
+      case 'auth/account-disabled':
+        return {
+          title: 'Account Deactivated',
+          message: 'Your account has been deactivated. Please contact your administrator to reactivate your account.',
+          icon: '🚫'
         };
       case 'auth/operation-not-allowed':
         return {
@@ -223,30 +233,78 @@ const LoginPage = () => {
         toast({
           title: "Login Successful",
         description: `Welcome back, ${email.split('@')[0]}!`,
-      });
+        });
 
       // Navigation will be handled by the useEffect that checks user state
       // Small delay to ensure auth state is updated and show success feedback
       setTimeout(() => {
-        // Redirect based on user role if no intended destination
-        if (from !== '/login') {
-          navigate(from, { replace: true });
-        } else {
-          // Determine redirect based on user role
-          const userRole = user?.role; // Get role from context
-          let defaultPath = '/admin/schedule';
-          
-          if (userRole === 'trainer') {
-            defaultPath = '/trainer/schedule';
-          } else if (userRole === 'program_manager') {
-            defaultPath = '/program-manager/dashboard';
-          }
-          
-          navigate(defaultPath, { replace: true });
-        }
+        const redirectPath = from !== '/login' ? from : '/admin/schedule';
+        navigate(redirectPath, { replace: true });
       }, 800);
     } catch (err) {
       console.error('Login error:', err);
+      
+      // Check if this is a user-not-found error for a trainer
+      if (err.code === 'auth/user-not-found') {
+        // Try to auto-create account for trainer from Trainer Accounts
+        try {
+          const { loadTrainerData } = await import('../utils/firestoreTrainers');
+          const { createTrainerAuthAccount } = await import('../utils/trainerSync');
+          
+          // Check if email exists in trainers array
+          const trainers = await loadTrainerData();
+          const trainer = trainers.find(t => t.email === email);
+          
+          if (trainer) {
+            const trainerData = trainer;
+            
+            toast({
+              title: "Creating Account",
+              description: "Setting up your account. Please wait...",
+            });
+            
+            // Create Firebase Auth account
+            const result = await createTrainerAuthAccount(trainerData, 'system-auto-create');
+            
+            if (result.success) {
+              toast({
+                title: "Account Created",
+                description: `Your account has been created. Please log in with password: ${result.password}`,
+                duration: 10000,
+              });
+              
+              // Auto-login with the created password
+              setTimeout(async () => {
+                try {
+                  await login(email, result.password);
+                  setIsSuccess(true);
+                  toast({
+                    title: "Login Successful",
+                    description: `Welcome, ${email.split('@')[0]}!`,
+                  });
+                  setTimeout(() => {
+                    navigate('/trainer/schedule', { replace: true });
+                  }, 800);
+                } catch (loginErr) {
+                  console.error('Auto-login error:', loginErr);
+                  toast({
+                    title: "Please Login Again",
+                    description: `Use password: ${result.password}`,
+                    variant: "default",
+                    duration: 10000,
+                  });
+                }
+              }, 1000);
+              
+              setIsLoading(false);
+              return;
+            }
+          }
+        } catch (autoCreateErr) {
+          console.error('Auto-create error:', autoCreateErr);
+        }
+      }
+      
       const errorInfo = getErrorMessage(err.code || err.message);
       setError(errorInfo);
       setIsSuccess(false);
@@ -415,6 +473,19 @@ const LoginPage = () => {
                     <div className="flex items-center gap-2">
                       <AlertCircle className="h-4 w-4 text-[#5A5A5A] flex-shrink-0" />
                       <p className="text-xs font-medium text-[#4A4A4A]">Your 24-hour session has expired. Please log in again to continue.</p>
+          </div>
+                  </motion.div>
+                )}
+                {logoutReason === 'account_deactivated' && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="mb-4 p-3.5 bg-gradient-to-r from-red-50/70 to-red-100/70 backdrop-blur-lg border border-red-200/70 rounded-2xl shadow-xl"
+                  >
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0" />
+                      <p className="text-xs font-medium text-[#4A4A4A]">Your account has been deactivated by an administrator. Please contact your administrator to reactivate your account.</p>
                     </div>
                   </motion.div>
                 )}
@@ -426,12 +497,12 @@ const LoginPage = () => {
                   transition={{ duration: 0.5, delay: 0.5 }}
                 >
                   <label htmlFor="email" className="block text-sm font-semibold text-[#4A4A4A] mb-2" style={{ fontFamily: 'Poppins, sans-serif' }}>Username</label>
-                  <input
-                    id="email"
-                    type="email"
-                    placeholder="user@iamneo.ai"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
+              <input
+                id="email"
+                type="email"
+                placeholder="user@iamneo.ai"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
                     disabled={isLoading || isSuccess}
                     className="w-full rounded-2xl px-5 py-3.5 bg-white/60 backdrop-blur-lg border-2 border-[#D0D0D0]/70 text-[#2C2C2C] placeholder:text-[#888888]/70 focus:outline-none focus:ring-2 focus:ring-[#707070] focus:border-[#707070] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl font-medium"
                     style={{ fontFamily: 'Poppins, sans-serif' }}
@@ -445,19 +516,29 @@ const LoginPage = () => {
                   transition={{ duration: 0.5, delay: 0.6 }}
                 >
                   <label htmlFor="password" className="block text-sm font-semibold text-[#4A4A4A] mb-2" style={{ fontFamily: 'Poppins, sans-serif' }}>Password</label>
-                  <input
-                    id="password"
-                    type="password"
-                    placeholder="Enter your password"
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
-                    disabled={isLoading || isSuccess}
-                    className="w-full rounded-2xl px-5 py-3.5 bg-white/60 backdrop-blur-lg border-2 border-[#D0D0D0]/70 text-[#2C2C2C] placeholder:text-[#888888]/70 focus:outline-none focus:ring-2 focus:ring-[#707070] focus:border-[#707070] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl font-medium"
-                    style={{ fontFamily: 'Poppins, sans-serif' }}
+                  <div className="relative">
+              <input
+                id="password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Enter your password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                      disabled={isLoading || isSuccess}
+                      className="w-full rounded-2xl px-5 py-3.5 pr-12 bg-white/60 backdrop-blur-lg border-2 border-[#D0D0D0]/70 text-[#2C2C2C] placeholder:text-[#888888]/70 focus:outline-none focus:ring-2 focus:ring-[#707070] focus:border-[#707070] transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl font-medium"
+                      style={{ fontFamily: 'Poppins, sans-serif' }}
                 autoComplete="current-password"
                 required
               />
-                  <button
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 text-[#666666] hover:text-[#2C2C2C] transition-colors focus:outline-none"
+                      tabIndex={-1}
+                    >
+                      {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                    </button>
+            </div>
+            <button
                     type="button"
                     onClick={handleForgotPassword}
                     disabled={resetEmailSent}
@@ -498,7 +579,7 @@ const LoginPage = () => {
                     <span>Login</span>
                   )}
                 </motion.button>
-              </form>
+          </form>
             </motion.div>
 
             {/* Right Side - Welcome Text & Illustration with Enhanced Pastel Design */}

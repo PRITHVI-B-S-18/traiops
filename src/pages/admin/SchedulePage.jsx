@@ -1,31 +1,132 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useOutletContext } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Upload, Download, Calendar, X, Edit3, PlusCircle, Filter, Search, X as CloseIcon, ChevronDown, AlertTriangle, Mail } from 'lucide-react';
+import { Upload, Download, Calendar, X, Edit3, PlusCircle, Filter, Search, X as CloseIcon, ChevronDown, ChevronUp, AlertTriangle, Mail, Trash2, ArrowLeft, Users, Clock, BarChart3, Loader2 } from 'lucide-react';
 import { useToast } from "@/components/ui/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import TrainerMatrixView from './TrainerMatrixView';
 import { saveScheduleData, loadScheduleData, subscribeToScheduleUpdates } from '../../utils/firestoreSchedule';
 import { loadTrainerData } from '../../utils/firestoreTrainers';
+import { useDebounce } from '@/hooks/useDebounce';
 import { notifyScheduleCreated, notifyScheduleUpdated, notifyScheduleDeleted, notifyNonTrainingCreated, notifyNonTrainingUpdated, notifyNonTrainingDeleted } from '../../utils/emailService';
 import DateRangeSelector from '@/components/DateRangeSelector';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { getClientsWithPMs } from '../../utils/firestoreClients';
+import { getUsersByRole } from '../../utils/firestoreUsers';
+import { cancelPendingRequestsForTask } from '../../utils/firestoreClockRequests';
+import { pdf, Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
+import { cn } from '@/lib/utils';
+import { cardStyles, sectionSpacing, cardPadding, getChipClasses } from '@/styles/designSystem';
+import { LoadingSkeleton } from '@/components/ui/loading-skeletons';
+import { getDatesInRange as getDatesInRangeTZ, convertToUTC, convertFromUTC, getCurrentDateInUserTimezone, isValidDateString, compareDateStrings, formatDateForDisplay } from '@/utils/timezoneUtils';
 
-// Modal animation variants
+// Modal animation variants - matching Dialog component animations
 const modalVariants = {
-  hidden: { opacity: 0, scale: 0.95 },
-  visible: { opacity: 1, scale: 1 },
-  exit: { opacity: 0, scale: 0.95 }
+  hidden: { opacity: 0 },
+  visible: { 
+    opacity: 1,
+    transition: { 
+      duration: 0.6,
+      ease: [0.16, 1, 0.3, 1]
+    } 
+  },
+  exit: { 
+    opacity: 0,
+    transition: { 
+      duration: 0.4,
+      ease: [0.16, 1, 0.3, 1]
+    } 
+  },
 };
+
+const modalContentVariants = {
+  hidden: { opacity: 0, scale: 0.95, y: 20 },
+  visible: { opacity: 1, scale: 1, y: 0 },
+  exit: { opacity: 0, scale: 0.95, y: 20 },
+};
+
+const modalContentTransition = {
+  type: 'spring',
+  damping: 18,
+  stiffness: 150,
+  mass: 1.2,
+  duration: 0.5,
+};
+
+const scheduleWizardSteps = [
+  {
+    key: 'type',
+    label: 'Task Type',
+    description: 'Choose whether this assignment is training or non-training',
+  },
+  {
+    key: 'details',
+    label: 'Assignment Details',
+    description: 'Fill in trainer, client, course, and description details',
+  },
+  {
+    key: 'dates',
+    label: 'Schedule Window',
+    description: 'Confirm the date range, excluded dates, and recipients',
+  },
+];
+
+const allocateWizardSteps = [
+  {
+    key: 'type',
+    label: 'Choose Type',
+    description: 'Training vs. non-training with tailored fields',
+  },
+  {
+    key: 'details',
+    label: 'Confirm Details',
+    description: 'Review trainer, client, and task metadata',
+  },
+  {
+    key: 'notify',
+    label: 'Notify Trainer',
+    description: 'Control whether an email notification is sent',
+  },
+];
+
+const WizardSteps = ({ title, steps }) => (
+  <div className="space-y-3">
+    <div className="flex items-center justify-between">
+      <h4 className="text-sm font-semibold uppercase tracking-wider text-slate-500">{title}</h4>
+      <span className="text-xs font-medium text-slate-400">{steps.length} steps</span>
+    </div>
+    <ol className="grid gap-3 sm:grid-cols-3">
+      {steps.map((step, index) => (
+        <li
+          key={step.key}
+          className={cn(
+            cardStyles.surface,
+            'flex flex-col gap-2 border-dashed border-slate-200/80 bg-slate-50/60 p-3'
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white">
+              {index + 1}
+            </span>
+            <p className="text-sm font-semibold text-slate-700">{step.label}</p>
+          </div>
+          <p className="text-xs text-slate-500 leading-relaxed">{step.description}</p>
+        </li>
+      ))}
+    </ol>
+  </div>
+);
 
 const SchedulePage = () => {
   const { toast } = useToast();
-  const { sidebarCollapsed } = useOutletContext();
+  const { sidebarCollapsed, setCommandState, resetCommandState } = useOutletContext();
   const [scheduleData, setScheduleData] = useState({});
+  const [loading, setLoading] = useState(true);
   const [selectedDate, setSelectedDate] = useState(null);
-  const [trainersOnSelectedDate, setTrainersOnSelectedDate] = useState([]);
+  const [activeDailyPanel, setActiveDailyPanel] = useState('training');
   const [isAllocateModalOpen, setIsAllocateModalOpen] = useState(false);
   const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
   const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
@@ -50,6 +151,7 @@ const SchedulePage = () => {
   const [editScope, setEditScope] = useState('day'); // 'day' or 'all'
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportFilters, setExportFilters] = useState({
+    format: 'excel',
     dateRange: 'all', // 'all', 'today', 'week', 'month', 'custom'
     customStartDate: '',
     customEndDate: '',
@@ -63,7 +165,8 @@ const SchedulePage = () => {
       task: true,
       description: true
     },
-    showOnlyScheduled: false
+    showOnlyScheduled: false,
+    selectedTrainers: []
   });
   const [selectedDateRange, setSelectedDateRange] = useState({
     startDate: '',
@@ -74,6 +177,7 @@ const SchedulePage = () => {
   const [isMoreTasksModalOpen, setIsMoreTasksModalOpen] = useState(false);
   const [selectedDayTasks, setSelectedDayTasks] = useState({ date: '', tasks: [] });
   const [searchTerm, setSearchTerm] = useState("");
+  const debouncedSearchTerm = useDebounce(searchTerm, 300);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterFields, setFilterFields] = useState({
     name: true,
@@ -86,6 +190,14 @@ const SchedulePage = () => {
     specialization: true
   });
   const [filterType, setFilterType] = useState('all'); // all, training, non-training, available
+  
+  // Client state for PM selection
+  const [clientsWithPMs, setClientsWithPMs] = useState([]);
+  const [selectedClient, setSelectedClient] = useState(null);
+  const [selectedPMs, setSelectedPMs] = useState([]); // Selected PM IDs for the task
+  const [availablePMs, setAvailablePMs] = useState([]); // PMs available for selected client
+  const [allPMs, setAllPMs] = useState([]); // Cache all PMs to avoid repeated fetches
+  const [loadingPMs, setLoadingPMs] = useState(false); // Loading state for PMs
 
   // New state for Matrix View filters
   const [isMatrixFilterModalOpen, setIsMatrixFilterModalOpen] = useState(false);
@@ -99,6 +211,49 @@ const SchedulePage = () => {
     role: 'all', // all, TA, Trainer
     nonTrainingTaskTypes: [], // For non-training task type filters
   });
+
+  const resolveClientName = useCallback(
+    (clientValue, fallbackText = '') => {
+      const valuesToCheck = [];
+      if (clientValue) valuesToCheck.push(clientValue);
+      if (fallbackText) valuesToCheck.push(fallbackText);
+
+      const attemptMatch = (candidate) => {
+        if (!candidate) return null;
+        const normalized = typeof candidate === 'string' ? candidate.trim() : candidate;
+        if (!normalized) return null;
+
+        const directMatch = clientsWithPMs.find(
+          (client) => client.clientId === normalized || client.name === normalized
+        );
+        if (directMatch) {
+          return directMatch.name;
+        }
+
+        if (typeof normalized === 'string') {
+          const stripped = normalized.split('(')[0].trim();
+          if (stripped && stripped !== normalized) {
+            const strippedMatch = clientsWithPMs.find((client) => client.name === stripped);
+            if (strippedMatch) {
+              return strippedMatch.name;
+            }
+          }
+        }
+
+        return typeof normalized === 'string' && normalized.length > 0 ? normalized : null;
+      };
+
+      for (const value of valuesToCheck) {
+        const match = attemptMatch(value);
+        if (match) {
+          return match;
+        }
+      }
+
+      return 'N/A';
+    },
+    [clientsWithPMs]
+  );
 
   const fileInputRef = useRef(null);
   const [isTrainerDropdownOpen, setIsTrainerDropdownOpen] = useState(false);
@@ -243,7 +398,7 @@ const SchedulePage = () => {
     }
   };
 
-  const downloadSampleExcel = () => {
+  const downloadSampleExcel = useCallback(() => {
     // Sample dates for the next few days
     const sampleDates = [
       '2025-06-23',
@@ -288,18 +443,25 @@ const SchedulePage = () => {
     XLSX.utils.book_append_sheet(workbook, nonTrainingSheet, 'Non-Training Schedule');
     XLSX.writeFile(workbook, 'SampleTrainerScheduleSummary.xlsx');
     toast({ title: "Success", description: "Sample summary Excel file downloaded (matches export summary format)." });
-  };
+  }, [toast]);
 
   const downloadAllData = () => {
     // Get all unique dates from scheduleData
+    // Convert UTC dates to user timezone for Excel export display
     const allDates = new Set();
-    Object.entries(scheduleData).forEach(([date, entries]) => {
+    Object.entries(scheduleData).forEach(([utcDate, entries]) => {
       entries.forEach(entry => {
         if (entry.startDate && entry.endDate) {
-          const dates = getDatesInRange(entry.startDate, entry.endDate);
-          dates.forEach(d => allDates.add(d));
+          // Entry dates are in UTC, convert to user timezone for display
+          const dates = getDatesInRangeTZ(entry.startDate, entry.endDate);
+          dates.forEach(utcDateStr => {
+            const userTimezoneDate = convertFromUTC(utcDateStr);
+            allDates.add(userTimezoneDate);
+          });
         } else {
-          allDates.add(date);
+          // Convert UTC date key to user timezone
+          const userTimezoneDate = convertFromUTC(utcDate);
+          allDates.add(userTimezoneDate);
         }
       });
     });
@@ -309,13 +471,15 @@ const SchedulePage = () => {
     const trainers = getAllUniqueTrainers();
 
     // Helper to get entry by type and date range
+    // date is in user timezone, need to convert to UTC for comparison with scheduleData
     const getEntry = (date, trainerName, type) => {
+      const dateUTC = convertToUTC(date);
       return Object.entries(scheduleData).find(([_, entries]) => {
         return entries.some(e => 
           e.trainer === trainerName && 
           e.type === type && 
-          date >= e.startDate && 
-          date <= e.endDate
+          dateUTC >= e.startDate && 
+          dateUTC <= e.endDate
         );
       })?.[1]?.find(e => e.trainer === trainerName && e.type === type);
     };
@@ -375,10 +539,12 @@ const SchedulePage = () => {
   // Replace the useEffect for loading schedule data with real-time subscription
   useEffect(() => {
     let isMounted = true;
+    setLoading(true);
     const unsubscribe = subscribeToScheduleUpdates((data) => {
       // Only update state if component is still mounted to prevent memory leaks
       if (isMounted) {
         setScheduleData(data || {});
+        setLoading(false);
       }
     });
 
@@ -404,14 +570,44 @@ const SchedulePage = () => {
     };
   }, []);
 
-  // Load trainer list from Firestore
+  // Load trainer list, clients, and all PMs from Firestore (upfront to avoid delays)
   useEffect(() => {
-    async function fetchTrainers() {
-      const data = await loadTrainerData();
-      setTrainerList(data || []);
+    async function fetchData() {
+      const [trainersData, clientsData, pmsData] = await Promise.all([
+        loadTrainerData(),
+        getClientsWithPMs(),
+        getUsersByRole('program_manager') // Load all PMs upfront
+      ]);
+      setTrainerList(trainersData || []);
+      setClientsWithPMs(clientsData || []);
+      setAllPMs(pmsData || []); // Cache all PMs for instant filtering
     }
-    fetchTrainers();
+    fetchData();
   }, []);
+
+
+  // Update available PMs when client is selected (instant - uses cached PMs)
+  useEffect(() => {
+    if (selectedClient && allPMs.length > 0) {
+      const client = clientsWithPMs.find(c => c.clientId === selectedClient);
+      if (client && client.programManagerIds && client.programManagerIds.length > 0) {
+        // Filter from cached PMs (instant, no API call)
+        const available = allPMs.filter(pm => {
+          const pmId = pm.uid || pm.id;
+          return client.programManagerIds.includes(pmId);
+        });
+        setAvailablePMs(available);
+        // Auto-select all PMs by default (user can deselect if needed)
+        setSelectedPMs(client.programManagerIds);
+      } else {
+        setAvailablePMs([]);
+        setSelectedPMs([]);
+      }
+    } else {
+      setAvailablePMs([]);
+      setSelectedPMs([]);
+    }
+  }, [selectedClient, clientsWithPMs, allPMs]);
 
   // Filter active trainers only
   const activeTrainers = useMemo(() => {
@@ -466,11 +662,16 @@ const SchedulePage = () => {
   }
 
   // Build a set of all dates that have any schedule - memoized
+  // Convert UTC dates to user timezone for calendar display
   const scheduledDates = useMemo(() => {
     const dates = new Set();
     flattenedScheduleData.forEach(entry => {
       if (entry.startDate && entry.endDate) {
-        getDatesInRange(entry.startDate, entry.endDate).forEach(dateStr => dates.add(dateStr));
+        // Entry dates are in UTC, convert to user timezone for display
+        getDatesInRange(entry.startDate, entry.endDate).forEach(utcDateStr => {
+          const userTimezoneDate = convertFromUTC(utcDateStr);
+          dates.add(userTimezoneDate);
+        });
       }
     });
     return dates;
@@ -479,18 +680,18 @@ const SchedulePage = () => {
   const handleDateClick = useCallback((day) => {
     const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     setSelectedDate(dateStr);
-    // Show all entries where dateStr is in [startDate, endDate]
-    const trainersForDate = flattenedScheduleData.filter(entry => {
-      if (!entry.startDate || !entry.endDate) return false;
-      return dateStr >= entry.startDate && dateStr <= entry.endDate;
-    });
-    setTrainersOnSelectedDate(trainersForDate);
-  }, [currentYear, currentMonth, flattenedScheduleData]);
+  }, [currentYear, currentMonth]);
+
+  useEffect(() => {
+    if (selectedDate) {
+      setActiveDailyPanel('training');
+    }
+  }, [selectedDate]);
 
   // Memoize search function to avoid recreating on every render
   const matchesSearch = useCallback((entryOrTrainer) => {
     // If no search term, return true (no filtering)
-    if (!searchTerm.trim()) return true;
+    if (!debouncedSearchTerm.trim()) return true;
     
     // If no filter fields are selected, search in all fields
     const hasActiveFilters = Object.values(filterFields).some(field => field);
@@ -505,7 +706,7 @@ const SchedulePage = () => {
         entryOrTrainer.description || '',
         entryOrTrainer.specialization || entryOrTrainer.skill || ''
       ];
-      return allFields.some(f => f && f.toLowerCase().includes(searchTerm.toLowerCase()));
+      return allFields.some(f => f && f.toLowerCase().includes(debouncedSearchTerm.toLowerCase()));
     }
     
     // Search only in selected fields
@@ -519,14 +720,17 @@ const SchedulePage = () => {
     if (filterFields.description) fields.push(entryOrTrainer.description || '');
     if (filterFields.specialization) fields.push(entryOrTrainer.specialization || entryOrTrainer.skill || '');
     
-    return fields.some(f => f && f.toLowerCase().includes(searchTerm.toLowerCase()));
-  }, [searchTerm, filterFields]);
+    return fields.some(f => f && f.toLowerCase().includes(debouncedSearchTerm.toLowerCase()));
+  }, [debouncedSearchTerm, filterFields]);
 
   // Memoize getTrainerCategories to avoid recalculating on every render
   const getTrainerCategories = useCallback((dateStr) => {
+    // Convert selected date (user timezone) to UTC for comparison with scheduleData (stored in UTC)
+    const dateStrUTC = convertToUTC(dateStr);
     const trainersForDate = flattenedScheduleData.filter(entry => {
       if (!entry.startDate || !entry.endDate) return false;
-      return dateStr >= entry.startDate && dateStr <= entry.endDate;
+      // Entry dates are in UTC, compare with converted date
+      return dateStrUTC >= entry.startDate && dateStrUTC <= entry.endDate;
     });
     const assignedTrainers = new Set();
     let trainingTrainers = trainersForDate.filter(entry => {
@@ -572,9 +776,21 @@ const SchedulePage = () => {
     };
   }, [flattenedScheduleData, matchesSearch, activeTrainers, filterType]);
 
+  const selectedTrainerCategories = useMemo(() => {
+    if (!selectedDate) {
+      return {
+        trainingTrainers: [],
+        nonTrainingTrainers: [],
+        availableTrainers: []
+      };
+    }
+    return getTrainerCategories(selectedDate);
+  }, [selectedDate, getTrainerCategories]);
+
   const startEditTask = (entry, date) => {
     console.log('startEditTask Debug:', { entry, date });
     
+    setIsAllocateModalOpen(false);
     setEditingTask({ ...entry, date });
     setEditingForm({ ...entry, type: entry.type }); // Ensure type is explicitly set
     setOriginalTaskType(entry.type); // Store the original task type
@@ -668,16 +884,38 @@ const SchedulePage = () => {
       
       // Now add the updated entry to the new date range
       const startDate = new Date(bulkEditDateRange.startDate);
-      const endDate = new Date(bulkEditDateRange.endDate);
-      const datesToUpdate = [];
-
-      // Generate all dates in range
-      for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().split('T')[0];
-        if (!excludedDates.includes(dateStr)) {
-          datesToUpdate.push(dateStr);
-        }
+      // Validate date range
+      if (!isValidDateString(bulkEditDateRange.startDate) || !isValidDateString(bulkEditDateRange.endDate)) {
+        toast({ 
+          title: 'Error', 
+          description: 'Invalid date range. Please select valid dates.', 
+          variant: "destructive" 
+        });
+        return;
       }
+
+      // Compare dates to ensure start <= end
+      const dateComparison = compareDateStrings(bulkEditDateRange.startDate, bulkEditDateRange.endDate);
+      if (dateComparison > 0) {
+        toast({ 
+          title: 'Error', 
+          description: 'Start date must be before or equal to end date.', 
+          variant: "destructive" 
+        });
+        return;
+      }
+
+      // Use timezone-aware date range function
+      // Dates from DateRangeSelector are in user's timezone, convert to UTC for storage
+      const startDateUTC = convertToUTC(bulkEditDateRange.startDate);
+      const endDateUTC = convertToUTC(bulkEditDateRange.endDate);
+      
+      // Generate all dates in range (returns UTC dates)
+      const allDatesInRange = getDatesInRangeTZ(startDateUTC, endDateUTC);
+      
+      // Filter out excluded dates (excluded dates should also be in UTC)
+      const excludedDatesUTC = excludedDates.map(date => convertToUTC(date));
+      const datesToUpdate = allDatesInRange.filter(dateStr => !excludedDatesUTC.includes(dateStr));
 
       // Add updated entries to new dates
       console.log('Dates to update:', datesToUpdate);
@@ -749,7 +987,10 @@ const SchedulePage = () => {
           trainer: finalEditingForm.trainer,
           startDate: bulkEditDateRange.startDate,
           endDate: bulkEditDateRange.endDate,
-          client: finalEditingForm.client || 'N/A',
+          client: resolveClientName(
+            finalEditingForm.clientId || finalEditingForm.client,
+            finalEditingForm.client
+          ),
           course: finalEditingForm.course || 'N/A',
           role: finalEditingForm.role || 'N/A',
           taskDetails: finalEditingForm.taskDetails || 'N/A',
@@ -782,7 +1023,10 @@ const SchedulePage = () => {
           trainer: finalEditingForm.trainer,
           startDate: validStartDate,
           endDate: validEndDate,
-          client: finalEditingForm.client || 'N/A',
+          client: resolveClientName(
+            finalEditingForm.clientId || finalEditingForm.client,
+            finalEditingForm.client
+          ),
           course: finalEditingForm.course || 'N/A',
           role: finalEditingForm.role || 'N/A',
           taskDetails: finalEditingForm.taskDetails || 'N/A',
@@ -843,6 +1087,7 @@ const SchedulePage = () => {
   };
 
   const openAllocateModal = (prefilledDate = null) => {
+    setIsEditModalOpen(false);
     if (prefilledDate) {
       setSelectedDate(prefilledDate);
       // Initialize selectedDateRange with the prefilled date
@@ -874,18 +1119,40 @@ const SchedulePage = () => {
     const selectedTrainerObj = trainerList.find(t => t.name === selectedTrainer);
     const trainerName = selectedTrainerObj ? selectedTrainerObj.name : selectedTrainer;
     
+    let clientDisplayName = 'N/A';
+    
     if (scheduleType === 'training') {
+      // Get selected client and PMs
+      const clientId = selectedClient || form.client.value;
+      const client = clientsWithPMs.find(c => c.clientId === clientId);
+      const clientOptionText =
+        form.client?.options?.[form.client.selectedIndex]?.text || '';
+      clientDisplayName = client?.name || resolveClientName(clientId, clientOptionText);
+      
+      // Validate PM selection
+      if (selectedPMs.length === 0) {
+        toast({ 
+          title: 'Error', 
+          description: 'Please select at least one Program Manager', 
+          variant: "destructive" 
+        });
+        return;
+      }
+      
       newEntry = {
         startDate: selectedDateRange.startDate,
         endDate: selectedDateRange.endDate,
         trainer: trainerName,
         role: form.role.value,
-        client: form.client.value,
+        client: clientDisplayName,
+        clientId: client?.clientId || null,
         course: form.course.value,
         description: form.description.value,
         type: 'training',
         id: Date.now(),
-        excludedDates: selectedDateRange.excludedDates || []
+        excludedDates: selectedDateRange.excludedDates || [],
+        // Use selected PMs (not all PMs of client)
+        assignedPMIds: selectedPMs
       };
     } else {
       newEntry = {
@@ -903,9 +1170,42 @@ const SchedulePage = () => {
     // Debug log
     console.log('Allocated entry:', newEntry);
     
-    // Generate dates in range excluding the excluded dates
-    const dates = getDatesInRange(selectedDateRange.startDate, selectedDateRange.endDate);
-    const validDates = dates.filter(dateStr => !selectedDateRange.excludedDates.includes(dateStr));
+    // Validate date range
+    if (!isValidDateString(selectedDateRange.startDate) || !isValidDateString(selectedDateRange.endDate)) {
+      toast({ 
+        title: 'Error', 
+        description: 'Invalid date range. Please select valid dates.', 
+        variant: "destructive" 
+      });
+      return;
+    }
+
+    // Compare dates to ensure start <= end
+    const dateComparison = compareDateStrings(selectedDateRange.startDate, selectedDateRange.endDate);
+    if (dateComparison > 0) {
+      toast({ 
+        title: 'Error', 
+        description: 'Start date must be before or equal to end date.', 
+        variant: "destructive" 
+      });
+      return;
+    }
+    
+    // Convert dates to UTC for storage (dates from DateRangeSelector are in user's timezone)
+    const startDateUTC = convertToUTC(selectedDateRange.startDate);
+    const endDateUTC = convertToUTC(selectedDateRange.endDate);
+    
+    // Generate dates in range (returns UTC dates)
+    const dates = getDatesInRangeTZ(startDateUTC, endDateUTC);
+    
+    // Convert excluded dates to UTC for comparison
+    const excludedDatesUTC = (selectedDateRange.excludedDates || []).map(date => convertToUTC(date));
+    const validDates = dates.filter(dateStr => !excludedDatesUTC.includes(dateStr));
+    
+    // Update entry dates to UTC for storage
+    newEntry.startDate = startDateUTC;
+    newEntry.endDate = endDateUTC;
+    newEntry.excludedDates = excludedDatesUTC;
     
     if (validDates.length === 0) {
       toast({ 
@@ -989,7 +1289,7 @@ const SchedulePage = () => {
           trainer: trainerName,
           startDate: validDates[0],
           endDate: validDates[validDates.length - 1],
-          client: form.client?.value || 'N/A',
+          client: clientDisplayName || 'N/A',
           course: form.course?.value || 'N/A',
           role: form.role?.value || 'N/A',
           taskDetails: form.taskDetails?.value || 'N/A',
@@ -1023,6 +1323,10 @@ const SchedulePage = () => {
     
     setIsAllocateModalOpen(false);
     setSendEmailOnCreate(true); // Reset to default
+    setSelectedClient(null); // Reset selected client
+    setSelectedPMs([]); // Reset selected PMs
+    setAvailablePMs([]); // Reset available PMs
+    setForm({}); // Reset form
   };
 
   const getTrainerSections = (entries) => {
@@ -1039,12 +1343,7 @@ const SchedulePage = () => {
         <div className="bg-white rounded-lg shadow-lg p-6 w-full max-w-2xl">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-xl font-semibold">
-              Tasks for {new Date(selectedDayTasks.date).toLocaleDateString('en-US', {
-                weekday: 'long',
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-              })}
+              Tasks for {formatDateForDisplay(selectedDayTasks.date, 'EEEE, MMMM d, yyyy')}
             </h3>
             <button 
               onClick={() => setIsMoreTasksModalOpen(false)}
@@ -1205,7 +1504,7 @@ const SchedulePage = () => {
     );
   };
 
-  const openScheduleModal = () => {
+  const openScheduleModal = useCallback(() => {
     setIsScheduleModalOpen(true);
     setScheduleType('training');
     setRole('');
@@ -1213,12 +1512,23 @@ const SchedulePage = () => {
     setSelectedTrainer('');
     setTrainerSearchTerm('');
     setIsTrainerDropdownOpen(false);
-  };
+    setSelectedClient(null);
+    setSelectedPMs([]);
+    setAvailablePMs([]);
+  }, []);
 
-  const closeScheduleModal = () => {
+  const closeScheduleModal = useCallback(() => {
     setIsScheduleModalOpen(false);
     setSendEmailOnCreate(true); // Reset to default
-  };
+    setSelectedClient(null); // Reset selected client
+    setSelectedPMs([]); // Reset selected PMs
+    setAvailablePMs([]); // Reset available PMs
+    setScheduleType('training'); // Reset to training
+    setRole(''); // Reset role
+    setSelectedTrainer(''); // Reset trainer
+    setTrainerSearchTerm(''); // Reset search
+    setIsTrainerDropdownOpen(false); // Close dropdown
+  }, []);
 
   const handleScheduleSubmit = async (e) => {
     e.preventDefault();
@@ -1391,20 +1701,51 @@ const SchedulePage = () => {
       });
     }
 
+    // Validate PM selection for training tasks before processing dates
+    if (scheduleType === 'training') {
+      if (!selectedClient) {
+        toast({ 
+          title: 'Error', 
+          description: 'Please select a client', 
+          variant: "destructive" 
+        });
+        return;
+      }
+      if (!selectedPMs || selectedPMs.length === 0) {
+        toast({ 
+          title: 'Error', 
+          description: 'Please select at least one Program Manager for this task', 
+          variant: "destructive" 
+        });
+        return;
+      }
+    }
+
     // Create entries for each valid date (either no conflicts or user chose to proceed with free dates)
     const newScheduleData = { ...scheduleData };
     dates.forEach(date => {
       if (scheduleType === 'training') {
+        // Get selected client
+        const client = clientsWithPMs.find(c => c.clientId === selectedClient);
+        
+        if (!client) {
+          console.error('Client not found:', selectedClient);
+          return; // Skip this date if client not found
+        }
+        
         newEntry = {
           startDate: date,
           endDate: date,
           trainer: trainerName,
           role: form.role.value,
-          client: form.client.value,
+          client: client.name,
+          clientId: client.clientId,
           course: form.course.value,
           description: form.description.value,
           type: 'training',
-          id: Date.now() + Math.random()
+          id: Date.now() + Math.random(),
+          // Use selected PMs (not all PMs of client)
+          assignedPMIds: selectedPMs
         };
       } else {
         newEntry = {
@@ -1443,11 +1784,13 @@ const SchedulePage = () => {
         let sampleEntry;
         
         if (scheduleType === 'training') {
+          const client = clientsWithPMs.find(c => c.clientId === selectedClient);
+          const clientNameForEmail = client?.name || resolveClientName(selectedClient);
           sampleEntry = {
             trainer: trainerName,
             startDate: dates[0],
             endDate: dates[dates.length - 1],
-            client: form.client.value,
+            client: clientNameForEmail,
             course: form.course.value,
             role: form.role.value,
             description: form.description.value,
@@ -1485,8 +1828,8 @@ const SchedulePage = () => {
       });
     }
     
-    setIsScheduleModalOpen(false);
-    setSendEmailOnCreate(true); // Reset to default
+    // Close modal and reset form
+    closeScheduleModal();
   };
 
   // Helper: get all unique dates in scheduleData
@@ -1548,6 +1891,16 @@ const SchedulePage = () => {
     // Save to database with error handling
     try {
       await saveScheduleData(newScheduleData);
+      
+      try {
+        await cancelPendingRequestsForTask(entry.id, {
+          reason: 'Associated schedule task was removed',
+          trainerName: entry.trainer,
+          taskLabel: entry.taskDetails || entry.client || entry.course || entry.role
+        });
+      } catch (requestError) {
+        console.error('⚠️ Failed to cancel pending clock requests for deleted task:', requestError);
+      }
       
           // Send email notification for deletion (only if enabled)
     if (sendEmailOnDelete) {
@@ -1716,16 +2069,45 @@ const SchedulePage = () => {
 
   // Add this JSX for the export modal
   const renderExportModal = () => (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-lg relative">
-        <button onClick={() => setIsExportModalOpen(false)} className="absolute top-2 right-2 text-gray-500 hover:text-black">&times;</button>
-        <h3 className="text-2xl font-semibold mb-4 text-foreground">Export Schedule</h3>
-        
-        <div className="space-y-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="relative w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-xl">
+        <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
+          <div>
+            <h3 className="text-xl font-semibold text-slate-900">Export Schedule</h3>
+            <p className="text-sm text-slate-500">Choose the format and filters you need for your export.</p>
+          </div>
+          <button
+            onClick={() => setIsExportModalOpen(false)}
+            className="rounded-full p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+            aria-label="Close export modal"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="max-h-[70vh] overflow-y-auto px-6 py-5 space-y-6">
+          {/* Format Selection */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">Export Format</label>
+            <select
+              id="export-format"
+              name="export-format"
+              value={exportFilters.format}
+              onChange={(e) => setExportFilters(f => ({ ...f, format: e.target.value }))}
+              className="w-full p-2 border border-border/50 rounded-md bg-muted/5"
+            >
+              <option value="excel">Excel (.xlsx)</option>
+              <option value="csv">CSV (.csv)</option>
+              <option value="pdf">PDF (.pdf)</option>
+            </select>
+            <p className="text-xs text-muted-foreground">Excel creates multi-sheet workbooks; CSV/PDF generate compact summaries.</p>
+          </div>
           {/* Date Range Selection */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Date Range</label>
             <select 
+              id="export-date-range"
+              name="export-date-range"
               value={exportFilters.dateRange}
               onChange={(e) => setExportFilters(f => ({ ...f, dateRange: e.target.value }))}
               className="w-full p-2 border border-border/50 rounded-md bg-muted/5"
@@ -1742,6 +2124,8 @@ const SchedulePage = () => {
           <div className="space-y-2">
             <label className="flex items-center gap-2">
               <input 
+                id="export-show-only-scheduled"
+                name="export-show-only-scheduled"
                 type="checkbox" 
                 checked={exportFilters.showOnlyScheduled}
                 onChange={(e) => setExportFilters(f => ({ ...f, showOnlyScheduled: e.target.checked }))}
@@ -1757,6 +2141,8 @@ const SchedulePage = () => {
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">Start Date</label>
                 <input 
+                  id="export-custom-start-date"
+                  name="export-custom-start-date"
                   type="date" 
                   value={exportFilters.customStartDate}
                   onChange={(e) => setExportFilters(f => ({ ...f, customStartDate: e.target.value }))}
@@ -1766,6 +2152,8 @@ const SchedulePage = () => {
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">End Date</label>
                 <input 
+                  id="export-custom-end-date"
+                  name="export-custom-end-date"
                   type="date" 
                   value={exportFilters.customEndDate}
                   onChange={(e) => setExportFilters(f => ({ ...f, customEndDate: e.target.value }))}
@@ -1781,6 +2169,8 @@ const SchedulePage = () => {
             <div className="space-y-2">
               <label className="flex items-center gap-2">
                 <input 
+                  id="export-include-training"
+                  name="export-include-training"
                   type="checkbox" 
                   checked={exportFilters.includeTraining}
                   onChange={(e) => setExportFilters(f => ({ ...f, includeTraining: e.target.checked }))}
@@ -1789,6 +2179,8 @@ const SchedulePage = () => {
               </label>
               <label className="flex items-center gap-2">
                 <input 
+                  id="export-include-non-training"
+                  name="export-include-non-training"
                   type="checkbox" 
                   checked={exportFilters.includeNonTraining}
                   onChange={(e) => setExportFilters(f => ({ ...f, includeNonTraining: e.target.checked }))}
@@ -1805,6 +2197,8 @@ const SchedulePage = () => {
               <div className="space-y-2">
                 <label className="flex items-center gap-2">
                   <input 
+                    id="export-task-type-course"
+                    name="export-task-type-course"
                     type="checkbox" 
                     checked={exportFilters.taskTypes.course}
                     onChange={(e) => setExportFilters(f => ({ 
@@ -1816,6 +2210,8 @@ const SchedulePage = () => {
                 </label>
                 <label className="flex items-center gap-2">
                   <input 
+                    id="export-task-type-client"
+                    name="export-task-type-client"
                     type="checkbox" 
                     checked={exportFilters.taskTypes.client}
                     onChange={(e) => setExportFilters(f => ({ 
@@ -1827,6 +2223,8 @@ const SchedulePage = () => {
                 </label>
                 <label className="flex items-center gap-2">
                   <input 
+                    id="export-task-type-training"
+                    name="export-task-type-training"
                     type="checkbox" 
                     checked={exportFilters.taskTypes.training}
                     onChange={(e) => setExportFilters(f => ({ 
@@ -1847,6 +2245,8 @@ const SchedulePage = () => {
               <div className="space-y-2">
                 <label className="flex items-center gap-2">
                   <input 
+                    id="export-task-type-task"
+                    name="export-task-type-task"
                     type="checkbox" 
                     checked={exportFilters.taskTypes.task}
                     onChange={(e) => setExportFilters(f => ({ 
@@ -1858,6 +2258,8 @@ const SchedulePage = () => {
                 </label>
                 <label className="flex items-center gap-2">
                   <input 
+                    id="export-task-type-non-training"
+                    name="export-task-type-non-training"
                     type="checkbox" 
                     checked={exportFilters.taskTypes.nonTraining}
                     onChange={(e) => setExportFilters(f => ({ 
@@ -1869,6 +2271,8 @@ const SchedulePage = () => {
                 </label>
                 <label className="flex items-center gap-2">
                   <input 
+                    id="export-task-type-description"
+                    name="export-task-type-description"
                     type="checkbox" 
                     checked={exportFilters.taskTypes.description}
                     onChange={(e) => setExportFilters(f => ({ 
@@ -1882,6 +2286,48 @@ const SchedulePage = () => {
             </div>
           )}
 
+          {/* Trainer Selection */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">Trainers</label>
+            <div className="rounded-md border border-border/50 bg-muted/5">
+              <label className="flex items-center gap-2 border-b border-border/40 px-3 py-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={exportFilters.selectedTrainers.length === 0}
+                  onChange={() => setExportFilters(f => ({ ...f, selectedTrainers: [] }))}
+                />
+                All Trainers
+              </label>
+              <div className="max-h-40 overflow-y-auto px-3 py-2 space-y-2 text-sm">
+                {trainerList.map((trainer) => {
+                  const name = trainer.name || trainer.trainerName || trainer.id || 'Unknown';
+                  const checked = exportFilters.selectedTrainers.includes(name);
+                  return (
+                    <label key={name} className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          setExportFilters(f => {
+                            const current = new Set(f.selectedTrainers);
+                            if (e.target.checked) {
+                              current.add(name);
+                            } else {
+                              current.delete(name);
+                            }
+                            return { ...f, selectedTrainers: Array.from(current) };
+                          });
+                        }}
+                      />
+                      <span>{name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">Leave all unchecked to export every trainer.</p>
+          </div>
+
           <div className="flex justify-end gap-2">
             <button 
               onClick={() => setIsExportModalOpen(false)} 
@@ -1890,7 +2336,7 @@ const SchedulePage = () => {
               Cancel
             </button>
             <button 
-              onClick={downloadSummaryExcel} 
+              onClick={handleScheduleExport} 
               className="px-4 py-2 rounded bg-blue-600 text-white"
             >
               Export
@@ -1902,8 +2348,190 @@ const SchedulePage = () => {
   );
 
   // Update the export button click handler
-  const handleExportClick = () => {
+  const handleExportClick = useCallback(() => {
     setIsExportModalOpen(true);
+  }, []);
+
+  const buildScheduleExportRows = () => {
+    const { dateRange, includeTraining, includeNonTraining, showOnlyScheduled, selectedTrainers } = exportFilters;
+    const { start, end } = getDateRange(dateRange);
+    const trainerFilter = new Set((selectedTrainers || []).filter(Boolean));
+
+    const matchesDateRange = (entry) => {
+      const startDate = entry.startDate ? new Date(entry.startDate) : entry.date ? new Date(entry.date) : null;
+      const endDate = entry.endDate ? new Date(entry.endDate) : startDate;
+      if (start && startDate && endDate && endDate < start) return false;
+      if (end && startDate && startDate > end) return false;
+      return true;
+    };
+
+    return flattenedScheduleData
+      .filter((entry) => {
+        if (!entry.trainer) return false;
+        if (trainerFilter.size > 0 && !trainerFilter.has(entry.trainer)) return false;
+        if (!matchesDateRange(entry)) return false;
+        if (!includeTraining && entry.type === 'training') return false;
+        if (!includeNonTraining && entry.type !== 'training') return false;
+        if (showOnlyScheduled) {
+          const hasAssignment = !!(
+            entry.client ||
+            entry.course ||
+            entry.taskDetails ||
+            entry.taskType ||
+            entry.role
+          );
+          if (!hasAssignment) return false;
+        }
+        return true;
+      })
+      .map((entry) => ({
+        trainer: entry.trainer,
+        type: entry.type === 'training' ? 'Training' : 'Non-Training',
+        client: entry.client || '',
+        course: entry.course || '',
+        role: entry.role || '',
+        taskDetails: entry.taskDetails || '',
+        taskType: entry.taskType || '',
+        description: entry.description || '',
+        startDate: entry.startDate || entry.date || '',
+        endDate: entry.endDate || entry.date || '',
+        specialization: entry.specialization || ''
+      }));
+  };
+
+  const downloadBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const scheduleCsvHeaders = [
+    { key: 'trainer', label: 'Trainer' },
+    { key: 'type', label: 'Type' },
+    { key: 'client', label: 'Client' },
+    { key: 'course', label: 'Course' },
+    { key: 'role', label: 'Role' },
+    { key: 'taskDetails', label: 'Task Details' },
+    { key: 'taskType', label: 'Task Type' },
+    { key: 'description', label: 'Description' },
+    { key: 'startDate', label: 'Start Date' },
+    { key: 'endDate', label: 'End Date' },
+    { key: 'specialization', label: 'Specialization' }
+  ];
+
+  const downloadScheduleCSV = (rows) => {
+    const escapeCSV = (value) => {
+      const content = value === null || value === undefined ? '' : String(value);
+      return `"${content.replace(/"/g, '""')}"`;
+    };
+
+    const lines = [scheduleCsvHeaders.map((h) => escapeCSV(h.label)).join(',')];
+    rows.forEach((row) => {
+      lines.push(scheduleCsvHeaders.map((h) => escapeCSV(row[h.key])).join(','));
+    });
+
+    const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8;' });
+    downloadBlob(blob, `schedule_export_${Date.now()}.csv`);
+  };
+
+  const schedulePdfStyles = StyleSheet.create({
+    page: {
+      padding: 24,
+      fontSize: 10,
+      fontFamily: 'Helvetica'
+    },
+    title: {
+      fontSize: 16,
+      fontWeight: 600,
+      marginBottom: 12
+    },
+    card: {
+      borderWidth: 1,
+      borderColor: '#E4E4E7',
+      borderRadius: 6,
+      padding: 10,
+      marginBottom: 8
+    },
+    row: {
+      marginBottom: 4
+    },
+    label: {
+      fontWeight: 600
+    }
+  });
+
+  const ScheduleExportDocument = ({ rows }) => (
+    <Document>
+      <Page size="A4" style={schedulePdfStyles.page}>
+        <Text style={schedulePdfStyles.title}>Schedule Export</Text>
+        {rows.map((row, index) => (
+          <View key={index} style={schedulePdfStyles.card} wrap={false}>
+            <Text style={schedulePdfStyles.row}>
+              <Text style={schedulePdfStyles.label}>Trainer: </Text>
+              {row.trainer}
+            </Text>
+            <Text style={schedulePdfStyles.row}>
+              <Text style={schedulePdfStyles.label}>Type: </Text>
+              {row.type}
+            </Text>
+            {row.client ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>Client: </Text>
+                {row.client}
+              </Text>
+            ) : null}
+            {row.course ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>Course: </Text>
+                {row.course}
+              </Text>
+            ) : null}
+            {row.role ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>Role: </Text>
+                {row.role}
+              </Text>
+            ) : null}
+            {row.taskDetails ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>Task: </Text>
+                {row.taskDetails}
+              </Text>
+            ) : null}
+            {row.taskType ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>Task Type: </Text>
+                {row.taskType}
+              </Text>
+            ) : null}
+            {row.description ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>Description: </Text>
+                {row.description}
+              </Text>
+            ) : null}
+            <Text style={schedulePdfStyles.row}>
+              <Text style={schedulePdfStyles.label}>Start Date: </Text>
+              {row.startDate}
+            </Text>
+            <Text style={schedulePdfStyles.row}>
+              <Text style={schedulePdfStyles.label}>End Date: </Text>
+              {row.endDate}
+            </Text>
+          </View>
+        ))}
+      </Page>
+    </Document>
+  );
+
+  const downloadSchedulePDF = async (rows) => {
+    const blob = await pdf(<ScheduleExportDocument rows={rows} />).toBlob();
+    downloadBlob(blob, `schedule_export_${Date.now()}.pdf`);
   };
 
   const downloadSummaryExcel = () => {
@@ -1916,7 +2544,10 @@ const SchedulePage = () => {
     filteredDates.sort();
 
     // Get all trainers from trainerList instead of just those with tasks
-    const trainers = trainerList.map(trainer => trainer.name);
+    let trainers = trainerList.map(trainer => trainer.name);
+    if (exportFilters.selectedTrainers.length > 0) {
+      trainers = trainers.filter((name) => exportFilters.selectedTrainers.includes(name));
+    }
 
     // Helper to get training entry for a trainer and date
     const getTrainingEntry = (date, trainerName) => {
@@ -1983,9 +2614,40 @@ const SchedulePage = () => {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, trainingSheet, 'Training Schedule');
     XLSX.utils.book_append_sheet(workbook, nonTrainingSheet, 'Non-Training Schedule');
-    XLSX.writeFile(workbook, 'TrainerScheduleSummary.xlsx');
+    XLSX.writeFile(workbook, 'TrainerSchedule.xlsx');
     toast({ title: "Success", description: "Summary schedule exported with separate sheets." });
     setIsExportModalOpen(false);
+  };
+
+  const handleScheduleExport = async () => {
+    if (exportFilters.format === 'excel') {
+      downloadSummaryExcel();
+      return;
+    }
+
+    try {
+      const rows = buildScheduleExportRows();
+      if (!rows.length) {
+        toast({
+          title: 'Nothing to export',
+          description: 'No schedule entries match your export filters.',
+          variant: 'destructive'
+        });
+        return;
+      }
+
+      if (exportFilters.format === 'pdf') {
+        await downloadSchedulePDF(rows);
+      } else {
+        downloadScheduleCSV(rows);
+      }
+
+      toast({ title: 'Export ready', description: `Schedule exported as ${exportFilters.format.toUpperCase()}.` });
+      setIsExportModalOpen(false);
+    } catch (error) {
+      console.error('Schedule export error:', error);
+      toast({ title: 'Export failed', description: 'Unable to generate schedule export.', variant: 'destructive' });
+    }
   };
 
   // Toggle selection for a task
@@ -2001,9 +2663,18 @@ const SchedulePage = () => {
   const handleBulkDelete = async () => {
     const newScheduleData = { ...scheduleData };
     let deletedCount = 0;
+    const tasksToRemove = new Map();
     
     Object.keys(newScheduleData).forEach(date => {
-      const originalLength = newScheduleData[date].length;
+      const originalTasks = newScheduleData[date];
+      const originalLength = originalTasks.length;
+
+      originalTasks.forEach(task => {
+        if (selectedTaskIds.includes(task.id)) {
+          tasksToRemove.set(task.id, task);
+        }
+      });
+      
       newScheduleData[date] = newScheduleData[date].filter(
         task => !selectedTaskIds.includes(task.id)
       );
@@ -2018,11 +2689,22 @@ const SchedulePage = () => {
     
     try {
       await saveScheduleData(newScheduleData);
-      setSelectedTaskIds([]);
+      
+      for (const [taskId, task] of tasksToRemove) {
+        try {
+          await cancelPendingRequestsForTask(taskId, {
+            reason: 'Associated schedule task was removed',
+            trainerName: task.trainer,
+            taskLabel: task.taskDetails || task.client || task.course || task.role
+          });
+        } catch (requestError) {
+          console.error('⚠️ Failed to cancel pending clock requests for deleted task:', requestError);
+        }
+      }
       
       toast({ 
-        title: 'Bulk Delete Success', 
-        description: `${deletedCount} tasks have been successfully removed from the schedule.`,
+        title: 'Tasks Deleted',
+        description: `${deletedCount} tasks removed successfully.`,
         variant: "default"
       });
     } catch (error) {
@@ -2092,32 +2774,372 @@ const SchedulePage = () => {
     };
   }, []);
 
-  return (
-    <div className="p-6 bg-muted/5 rounded-lg min-h-full">
-      <div className="flex flex-wrap justify-between items-center mb-8 gap-4">
-        <h2 className="text-3xl font-medium text-foreground">
-          Trainer Schedule Management
-        </h2>
-        <div className="flex gap-3 flex-wrap">
-          <Button onClick={() => setViewMode(viewMode === 'calendar' ? 'matrix' : 'calendar')} variant="outline">
-            {viewMode === 'calendar' ? 'Matrix View' : 'Calendar View'}
-          </Button>
-          <Button onClick={() => fileInputRef.current.click()} className="bg-foreground text-background hover:bg-foreground/90">
-            <Upload className="mr-2 h-4 w-4" /> Import Excel
-          </Button>
-          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".xlsx, .xls, .csv" style={{ display: 'none' }} />
-          <Button onClick={downloadSampleExcel} variant="outline" className="border-border hover:bg-muted">
-            <Download className="mr-2 h-4 w-4" /> Sample
-          </Button>
-          <Button onClick={handleExportClick} variant="outline" className="border-border hover:bg-muted">
-            <Download className="mr-2 h-4 w-4" /> Export
-          </Button>
-          <Button onClick={openScheduleModal} className="bg-foreground text-background hover:bg-foreground/90">
-            <PlusCircle className="mr-2 h-4 w-4" /> New Schedule
+  const ActionIconButton = ({ onClick, label, icon: Icon, variant = 'neutral', accent = 'blue' }) => {
+    const accentClassMap = {
+      blue: 'text-blue-600 hover:bg-blue-100/70 focus:ring-blue-500',
+      orange: 'text-orange-600 hover:bg-orange-100/70 focus:ring-orange-500',
+      green: 'text-green-600 hover:bg-green-100/70 focus:ring-green-500'
+    };
+    const base = 'inline-flex items-center justify-center rounded-full p-2 bg-white/80 shadow-sm border border-white/70 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1';
+    const variantClasses = variant === 'danger'
+      ? 'text-red-600 hover:bg-red-100/80 focus:ring-red-500'
+      : (accentClassMap[accent] || accentClassMap.blue);
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`${base} ${variantClasses}`}
+        aria-label={label}
+        title={label}
+      >
+        <Icon className="w-4 h-4" />
+      </button>
+    );
+  };
+
+  const accentTokens = {
+    blue: {
+      headerBg: 'bg-blue-50/70',
+      cardBg: 'bg-blue-50/40',
+      textPrimary: 'text-blue-900',
+      muted: 'text-blue-700/80',
+      badge: 'bg-blue-100 text-blue-700',
+      dot: 'bg-blue-500',
+      border: 'border-blue-500/40'
+    },
+    orange: {
+      headerBg: 'bg-orange-50/70',
+      cardBg: 'bg-orange-50/40',
+      textPrimary: 'text-orange-900',
+      muted: 'text-orange-700/80',
+      badge: 'bg-orange-100 text-orange-700',
+      dot: 'bg-orange-500',
+      border: 'border-orange-500/40'
+    },
+    green: {
+      headerBg: 'bg-green-50/70',
+      cardBg: 'bg-green-50/40',
+      textPrimary: 'text-green-900',
+      muted: 'text-green-700/80',
+      badge: 'bg-green-100 text-green-700',
+      dot: 'bg-green-500',
+      border: 'border-green-500/40'
+    }
+  };
+
+  const renderSectionItems = (section) => {
+    if (!section.items || section.items.length === 0) {
+      return <p className="text-sm text-muted-foreground">{section.emptyLabel}</p>;
+    }
+
+    if (section.key === 'available') {
+      return section.items.map((trainer, index) => (
+        <div
+          key={trainer.id || `${trainer.name}-${index}`}
+          className={`flex w-full items-center justify-between gap-3 rounded-xl border ${accentTokens[section.accent].border} ${accentTokens[section.accent].cardBg} p-3 shadow-sm`}
+        >
+          <div className="min-w-0">
+            <p className={`font-semibold ${accentTokens[section.accent].textPrimary} truncate`}>{trainer.name}</p>
+            <p className="text-xs text-gray-600 mt-0.5">Specialization: {trainer.specialization || 'Not specified'}</p>
+          </div>
+          <Button
+            onClick={() => {
+              setSelectedTrainer(trainer.name);
+              setSelectedDate(selectedDate);
+              setIsAllocateModalOpen(true);
+            }}
+            className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-3 py-2 text-sm rounded-lg"
+          >
+            <PlusCircle className="w-4 h-4" />
+            <span className="hidden sm:inline">Schedule</span>
           </Button>
         </div>
-      </div>
+      ));
+    }
 
+    return section.items.map((entry) => (
+       <div
+         key={entry.id}
+         className={`relative flex w-full items-start gap-3 rounded-xl border ${accentTokens[section.accent].border} ${accentTokens[section.accent].cardBg} p-4 shadow-sm`}
+       >
+         <span className={`absolute left-0 top-3 bottom-3 w-1 rounded-full ${accentTokens[section.accent].dot}`}></span>
+         <div className="flex items-start gap-3 pl-4 pr-16">
+           <input
+             type="checkbox"
+             className="mt-1"
+             checked={selectedTaskIds.includes(entry.id)}
+             onChange={() => toggleTaskSelection(entry.id)}
+           />
+           <div className="min-w-0 space-y-1">
+             <p className={`font-semibold ${accentTokens[section.accent].textPrimary} truncate`}>{entry.trainer}</p>
+             <div className="space-y-0.5 text-xs text-gray-600">
+               {section.key === 'training' ? (
+                 <>
+                   <div className="flex items-center gap-1"><span className="text-gray-400">Client:</span><span className="font-medium text-gray-700">{entry.client}</span></div>
+                   <div className="flex items-center gap-1"><span className="text-gray-400">Course:</span><span className="font-medium text-gray-700">{entry.course}</span></div>
+                   {entry.role && <div className="flex items-center gap-1"><span className="text-gray-400">Role:</span><span className="font-medium text-gray-700">{entry.role}</span></div>}
+                   {entry.description && <div className="text-gray-500">Notes: {entry.description}</div>}
+                 </>
+               ) : (
+                 <>
+                   <div className="flex items-center gap-1"><span className="text-gray-400">Task:</span><span className="font-medium text-gray-700">{entry.taskDetails}</span></div>
+                   <div className="flex items-center gap-1"><span className="text-gray-400">Type:</span><span className="font-medium text-gray-700">{entry.taskType}</span></div>
+                   {entry.description && <div className="text-gray-500">Notes: {entry.description}</div>}
+                 </>
+               )}
+             </div>
+           </div>
+         </div>
+         <div className="absolute top-1/2 right-4 -translate-y-1/2 flex items-center gap-2">
+           <ActionIconButton
+             onClick={() => startEditTask(entry, selectedDate)}
+             label="Edit assignment"
+             icon={Edit3}
+             accent={section.accent}
+           />
+           <ActionIconButton
+             onClick={() => handleDeleteEntry(entry, selectedDate)}
+             label="Delete assignment"
+             icon={Trash2}
+             variant="danger"
+           />
+         </div>
+       </div>
+    ));
+  };
+
+  const dailySections = useMemo(() => [
+    { key: 'training', title: 'Training', items: selectedTrainerCategories.trainingTrainers, accent: 'blue' },
+    { key: 'non-training', title: 'Non-Training', items: selectedTrainerCategories.nonTrainingTrainers, accent: 'orange' },
+    { key: 'available', title: 'Available', items: selectedTrainerCategories.availableTrainers, accent: 'green' }
+  ], [selectedTrainerCategories]);
+
+  const scheduleMetrics = useMemo(() => {
+    const summary = {
+      totalAssignments: 0,
+      training: 0,
+      nonTraining: 0,
+      upcoming: 0,
+      activeTrainers: 0,
+      trainingPercent: 0,
+      nonTrainingPercent: 0,
+      needsAttention: 0
+    };
+
+    if (!flattenedScheduleData.length) {
+      return summary;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const nextWeek = new Date(today);
+    nextWeek.setDate(today.getDate() + 7);
+    const trainers = new Set();
+
+    flattenedScheduleData.forEach((entry) => {
+      if (!entry?.trainer) return;
+      trainers.add(entry.trainer);
+
+      if (entry.type === 'training') {
+        summary.training += 1;
+      } else {
+        summary.nonTraining += 1;
+      }
+
+      const start = entry.startDate || entry.date;
+      if (start) {
+        const dateObj = new Date(start);
+        if (!Number.isNaN(dateObj.getTime()) && dateObj >= today && dateObj <= nextWeek) {
+          summary.upcoming += 1;
+        }
+      }
+
+      const needsAttention =
+        entry.client === 'Not Alloted' ||
+        entry.course === 'Not Alloted' ||
+        entry.role === 'Not Alloted' ||
+        entry.taskDetails === 'Not Alloted' ||
+        entry.description === 'Not Alloted';
+      if (needsAttention) {
+        summary.needsAttention += 1;
+      }
+    });
+
+    summary.totalAssignments = summary.training + summary.nonTraining;
+    summary.activeTrainers = trainers.size;
+    if (summary.totalAssignments > 0) {
+      summary.trainingPercent = Math.round((summary.training / summary.totalAssignments) * 100);
+      summary.nonTrainingPercent = Math.round((summary.nonTraining / summary.totalAssignments) * 100);
+    }
+
+    return summary;
+  }, [flattenedScheduleData]);
+
+  const formattedSelectedDate = useMemo(() => {
+    if (!selectedDate) return null;
+    try {
+      return new Date(selectedDate).toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric'
+      });
+    } catch (error) {
+      return selectedDate;
+    }
+  }, [selectedDate]);
+
+  const scheduleSummary = useMemo(() => {
+    const client = clientsWithPMs.find((c) => c.clientId === selectedClient);
+    const trainer = trainerList.find((t) => t.name === selectedTrainer);
+    return {
+      trainerName: trainer?.name || selectedTrainer || 'Not selected',
+      taskTypeLabel: scheduleType === 'training' ? 'Training Assignment' : 'Non-training Assignment',
+      clientName: client?.name || (selectedClient ? resolveClientName(selectedClient) : 'Not selected'),
+      pmCount: selectedPMs.length,
+      role,
+      taskType,
+      dateRange: selectedDateRange.startDate && selectedDateRange.endDate
+        ? `${selectedDateRange.startDate} → ${selectedDateRange.endDate}`
+        : 'Pick a schedule window',
+      excludedDates: selectedDateRange.excludedDates || [],
+    };
+  }, [clientsWithPMs, selectedClient, trainerList, selectedTrainer, scheduleType, selectedPMs, role, taskType, selectedDateRange]);
+
+  const selectedPMNames = useMemo(() => {
+    if (!selectedPMs.length) return [];
+    const pmLookup = new Map();
+    [...allPMs, ...availablePMs].forEach((pm) => {
+      const pmId = pm?.uid || pm?.id;
+      if (!pmId) return;
+      if (!pmLookup.has(pmId)) {
+        pmLookup.set(pmId, pm);
+      }
+    });
+    return selectedPMs
+      .map((pmId) => pmLookup.get(pmId))
+      .filter(Boolean)
+      .map((pm) => pm.displayName || pm.name || pm.email || 'Unnamed PM');
+  }, [selectedPMs, allPMs, availablePMs]);
+
+  const commandActions = useMemo(() => (
+    <>
+      <Button
+        onClick={() => setViewMode(viewMode === 'calendar' ? 'matrix' : 'calendar')}
+        variant="outline"
+        size="sm"
+        className="flex items-center gap-2 whitespace-nowrap"
+      >
+            {viewMode === 'calendar' ? 'Matrix View' : 'Calendar View'}
+          </Button>
+      <Button
+        onClick={() => fileInputRef.current.click()}
+        variant="outline"
+        size="sm"
+        className="flex items-center gap-2 border-dashed whitespace-nowrap"
+      >
+        <Upload className="h-4 w-4" /> Import
+          </Button>
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileUpload}
+        accept=".xlsx, .xls, .csv"
+        style={{ display: 'none' }}
+      />
+      <Button onClick={downloadSampleExcel} variant="outline" size="sm" className="flex items-center gap-2 whitespace-nowrap">
+        <Download className="h-4 w-4" /> Sample
+          </Button>
+      <Button onClick={handleExportClick} variant="outline" size="sm" className="flex items-center gap-2 whitespace-nowrap">
+        <Download className="h-4 w-4" /> Export
+          </Button>
+      <Button onClick={openScheduleModal} size="sm" className="flex items-center gap-2 whitespace-nowrap">
+        <PlusCircle className="h-4 w-4" /> New Schedule
+      </Button>
+    </>
+  ), [
+    viewMode,
+    setViewMode,
+    handleExportClick,
+    downloadSampleExcel,
+    openScheduleModal,
+  ]);
+
+  const commandMetrics = useMemo(() => {
+    return (
+      <>
+        <div className={cn(cardStyles.surface, 'flex items-center justify-between p-4 shadow-sm')}>
+          <div>
+            <p className="text-xs font-medium uppercase text-slate-500">Total Assignments</p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">{scheduleMetrics.totalAssignments}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 font-medium">
+                <Users className="h-3 w-3" /> {scheduleMetrics.activeTrainers} active
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 font-medium text-rose-600">
+                <AlertTriangle className="h-3 w-3" /> {scheduleMetrics.needsAttention} needs details
+              </span>
+        </div>
+      </div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+            <Calendar className="h-5 w-5" />
+          </div>
+        </div>
+        <div className={cn(cardStyles.surface, 'flex items-center justify-between p-4 shadow-sm')}>
+          <div>
+            <p className="text-xs font-medium uppercase text-blue-600">Training</p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">{scheduleMetrics.training}</p>
+            <p className="text-xs text-slate-400">{scheduleMetrics.trainingPercent}% of workload</p>
+          </div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+            <BarChart3 className="h-5 w-5" />
+          </div>
+        </div>
+        <div className={cn(cardStyles.surface, 'flex items-center justify-between p-4 shadow-sm')}>
+          <div>
+            <p className="text-xs font-medium uppercase text-orange-600">Non-Training</p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">{scheduleMetrics.nonTraining}</p>
+            <p className="text-xs text-slate-400">{scheduleMetrics.nonTrainingPercent}% of workload</p>
+          </div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-orange-600">
+            <BarChart3 className="h-5 w-5" />
+          </div>
+        </div>
+        <div className={cn(cardStyles.surface, 'flex items-center justify-between p-4 shadow-sm')}>
+          <div>
+            <p className="text-xs font-medium uppercase text-purple-600">Upcoming (7 days)</p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">{scheduleMetrics.upcoming}</p>
+            <p className="text-xs text-slate-400">Scheduled sessions in the next week</p>
+          </div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-50 text-purple-600">
+            <Clock className="h-5 w-5" />
+          </div>
+        </div>
+      </>
+    );
+  }, [scheduleMetrics]);
+
+  useEffect(() => {
+    if (!setCommandState) return;
+    setCommandState({
+      title: 'Trainer Schedule Management',
+      description: 'Allocate training and non-training assignments, monitor availability, and export insights in one place.',
+      actions: commandActions,
+      metrics: commandMetrics,
+    });
+    return () => {
+      if (resetCommandState) {
+        resetCommandState();
+      }
+    };
+  }, [commandActions, commandMetrics, setCommandState, resetCommandState]);
+
+  if (loading) {
+    return <LoadingSkeleton message="Loading schedule data..." />;
+  }
+
+  return (
+    <div className="space-y-6">
       <div className="bg-muted/5 rounded-lg border border-border/50 shadow-sm p-4">
         <div className="flex justify-between items-center mb-4">
           <button
@@ -2421,8 +3443,8 @@ const SchedulePage = () => {
                 {/* Bulk Delete Button and Select All for daily view */}
                 {(() => {
                   const allTaskIds = [
-                    ...getTrainerCategories(selectedDate).trainingTrainers.map(e => e.id),
-                    ...getTrainerCategories(selectedDate).nonTrainingTrainers.map(e => e.id)
+                    ...selectedTrainerCategories.trainingTrainers.map(e => e.id),
+                    ...selectedTrainerCategories.nonTrainingTrainers.map(e => e.id)
                   ];
                   const allSelected = allTaskIds.length > 0 && allTaskIds.every(id => selectedTaskIds.includes(id));
                   return (
@@ -2442,94 +3464,50 @@ const SchedulePage = () => {
                     </div>
                   );
                 })()}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  {/* Training Assigned Trainers Section */}
-                  <div className="bg-white rounded-lg shadow p-4 border border-border/50">
-                    <h3 className="text-lg font-semibold mb-4 text-blue-600">Training Assigned Trainers</h3>
-                    <div className="space-y-3">
-                      {getTrainerCategories(selectedDate).trainingTrainers.map((entry, index) => (
-                        <div key={index} className="bg-blue-50 p-3 rounded-lg flex justify-between items-center">
+                <div className="hidden md:grid md:grid-cols-3 gap-4">
+                  {dailySections.map(section => (
+                    <div key={section.key} className={`flex flex-col rounded-2xl border ${accentTokens[section.accent].border} bg-white shadow-sm h-[68vh]`}>
+                      <div className={`flex items-center justify-between px-4 py-3 border-b ${accentTokens[section.accent].headerBg}`}>
                           <div className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={selectedTaskIds.includes(entry.id)}
-                              onChange={() => toggleTaskSelection(entry.id)}
-                            />
-                            <div>
-                              <p className="font-medium">{entry.trainer}</p>
-                              <p className="text-sm text-gray-600">Client: {entry.client}</p>
-                              <p className="text-sm text-gray-600">Course: {entry.course}</p>
-                              <p className="text-sm text-gray-600">Description: {entry.description}</p>
+                          <span className={`w-2 h-2 rounded-full ${accentTokens[section.accent].dot}`}></span>
+                          <span className={`text-sm font-semibold ${accentTokens[section.accent].textPrimary}`}>{section.title}</span>
                             </div>
+                         <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${accentTokens[section.accent].badge}`}>
+                           {section.items.length}
+                         </span>
                           </div>
-                          <div className="flex gap-2">
-                            <Button onClick={() => startEditTask(entry, selectedDate)} variant="outline">Edit</Button>
-                            <Button onClick={() => handleDeleteEntry(entry, selectedDate)} variant="destructive">Delete</Button>
+                       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+                         {renderSectionItems(section)}
                           </div>
                         </div>
                       ))}
-                      {getTrainerCategories(selectedDate).trainingTrainers.length === 0 && (
-                        <p className="text-gray-500 text-sm">No training assignments for this date</p>
-                      )}
                     </div>
+                 <div className="md:hidden space-y-3">
+                   {dailySections.map(section => (
+                     <div key={section.key} className="border border-gray-200 rounded-2xl shadow-sm bg-white overflow-hidden">
+                       <button
+                         type="button"
+                         onClick={() => setActiveDailyPanel(prev => (prev === section.key ? null : section.key))}
+                         className="w-full flex items-center justify-between px-4 py-3 text-left"
+                       >
+                         <div className="flex items-center gap-2">
+                           <span className={`w-2 h-2 rounded-full ${accentTokens[section.accent].dot}`}></span>
+                           <span className={`text-sm font-semibold ${accentTokens[section.accent].textPrimary}`}>{section.title}</span>
                   </div>
-                  {/* Non-Training Task Allocated Trainers Section */}
-                  <div className="bg-white rounded-lg shadow p-4 border border-border/50">
-                    <h3 className="text-lg font-semibold mb-4 text-orange-600">Non-Training Task Allocated Trainers</h3>
-                    <div className="space-y-3">
-                      {getTrainerCategories(selectedDate).nonTrainingTrainers.map((entry, index) => (
-                        <div key={index} className="bg-orange-50 p-3 rounded-lg flex justify-between items-center">
                           <div className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={selectedTaskIds.includes(entry.id)}
-                              onChange={() => toggleTaskSelection(entry.id)}
-                            />
-                            <div>
-                              <p className="font-medium">{entry.trainer}</p>
-                              <p className="text-sm text-gray-600">Task: {entry.taskDetails}</p>
-                              <p className="text-sm text-gray-600">Type: {entry.taskType}</p>
-                              <p className="text-sm text-gray-600">Description: {entry.description}</p>
+                           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${accentTokens[section.accent].badge}`}>
+                             {section.items.length}
+                           </span>
+                           <ChevronDown className={`w-4 h-4 transition-transform ${activeDailyPanel === section.key ? 'rotate-180' : ''}`} />
                             </div>
+                       </button>
+                       {activeDailyPanel === section.key && (
+                         <div className="px-4 pb-4 space-y-3 max-h-[55vh] overflow-y-auto">
+                           {renderSectionItems(section)}
                           </div>
-                          <div className="flex gap-2">
-                            <Button onClick={() => startEditTask(entry, selectedDate)} variant="outline">Edit</Button>
-                            <Button onClick={() => handleDeleteEntry(entry, selectedDate)} variant="destructive">Delete</Button>
-                          </div>
+                       )}
                         </div>
                       ))}
-                      {getTrainerCategories(selectedDate).nonTrainingTrainers.length === 0 && (
-                        <p className="text-gray-500 text-sm">No non-training tasks for this date</p>
-                      )}
-                    </div>
-                  </div>
-                  {/* Available Trainers Section */}
-                  <div className="bg-white rounded-lg shadow p-4 border border-border/50">
-                    <h3 className="text-lg font-semibold mb-4 text-green-600">Available Trainers</h3>
-                    <div className="space-y-3">
-                      {getTrainerCategories(selectedDate).availableTrainers.map((trainer, index) => (
-                        <div key={index} className="bg-green-50 p-3 rounded-lg flex justify-between items-center">
-                          <div>
-                            <p className="font-medium">{trainer.name}</p>
-                            <p className="text-sm text-gray-600">Specialization: {trainer.specialization || 'Not specified'}</p>
-                          </div>
-                          <Button
-                            onClick={() => {
-                              setSelectedTrainer(trainer.name);
-                              setSelectedDate(selectedDate);
-                              setIsAllocateModalOpen(true);
-                            }}
-                            className="bg-green-600 hover:bg-green-700 text-white"
-                          >
-                            Schedule Task
-                          </Button>
-                        </div>
-                      ))}
-                      {getTrainerCategories(selectedDate).availableTrainers.length === 0 && (
-                        <p className="text-gray-500 text-sm">No available trainers for this date</p>
-                      )}
-                    </div>
-                  </div>
                 </div>
               </div>
             )}
@@ -2568,49 +3546,84 @@ const SchedulePage = () => {
       </div>
 
       {/* Allocate Modal */}
-      <AnimatePresence>
-        {isAllocateModalOpen && (
+      {isAllocateModalOpen && createPortal(
+      <AnimatePresence mode="wait" initial={false}>
           <motion.div
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            className="fixed top-0 left-0 right-0 bottom-0 w-screen h-screen bg-black/80 flex items-center justify-center z-50 p-4"
             initial="hidden"
             animate="visible"
             exit="exit"
             variants={modalVariants}
           >
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[85vh] flex flex-col">
+            <motion.div
+              className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col border border-gray-200"
+              variants={modalContentVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              transition={modalContentTransition}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="allocate-modal-title"
+            >
               {/* Header */}
-              <div className="p-4 border-b border-gray-100">
-                <div className="flex justify-between items-center">
+              <div className="p-5 border-b border-gray-200 bg-white">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => {
+                        setIsAllocateModalOpen(false);
+                        setSendEmailOnCreate(true); // Reset to default
+                      }}
+                      className="h-8 w-8 rounded-md hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+                      aria-label="Back"
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                    </Button>
                   <div>
-                    <h3 className="text-xl font-semibold text-gray-900">Assign New Schedule</h3>
+                      <h3 id="allocate-modal-title" className="text-lg font-semibold text-gray-900">Assign New Schedule</h3>
                     <p className="text-xs text-gray-500 mt-1">
                       Allocate training or non-training tasks for selected trainer
                     </p>
                   </div>
-                  <Button variant="ghost" size="icon" onClick={() => {
+                  </div>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    onClick={() => {
                     setIsAllocateModalOpen(false);
                     setSendEmailOnCreate(true); // Reset to default
-                  }} className="hover:bg-gray-100 h-8 w-8">
+                    }} 
+                    className="h-8 w-8 rounded-md hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+                    aria-label="Close"
+                  >
                     <X className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
               
               {/* Content */}
-              <form id="allocate-form" onSubmit={handleAllocateTraining} className="flex-1 flex overflow-hidden">
+            <div className="border-b border-slate-200 bg-slate-50 px-6 py-4">
+              <WizardSteps title="Allocation Steps" steps={allocateWizardSteps} />
+            </div>
+
+              <form 
+                id="allocate-form" 
+                onSubmit={handleAllocateTraining} 
+                className="flex-1 grid grid-cols-1 gap-6 overflow-hidden lg:grid-cols-[minmax(0,0.58fr)_minmax(0,0.42fr)] xl:grid-cols-[minmax(0,0.6fr)_minmax(0,0.4fr)]"
+              >
                 {/* Left Side: Form Fields */}
-                <div className="w-1/2 p-4 space-y-4 overflow-y-auto">
+                <div className={cn('overflow-y-auto border border-slate-200 bg-white px-6 py-6', sectionSpacing, 'rounded-xl shadow-sm')}>
                   {/* Step 1: Task Type Selection */}
-                  <div className="space-y-2">
-                    <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                      <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                      Task Type
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className={`relative p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 ${
+                  <div className={cn(cardStyles.surface, 'space-y-4 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                    <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Task Type</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
                         scheduleType === 'training' 
-                          ? 'border-blue-500 bg-blue-50' 
-                          : 'border-gray-200 hover:border-gray-300'
+                          ? 'border-blue-500 bg-blue-50/50 shadow-sm' 
+                          : 'border-gray-200 hover:border-gray-300 bg-white'
                       }`}>
                         <input 
                           type="radio" 
@@ -2621,21 +3634,21 @@ const SchedulePage = () => {
                           className="sr-only" 
                         />
                         <div className="flex items-center gap-2">
-                          <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center ${
+                          <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
                             scheduleType === 'training' ? 'border-blue-500' : 'border-gray-300'
                           }`}>
                             {scheduleType === 'training' && <div className="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>}
                           </div>
-                          <div>
+                          <div className="min-w-0">
                             <p className="font-medium text-gray-900 text-sm">Training</p>
-                            <p className="text-xs text-gray-500">Client-facing sessions</p>
+                            <p className="text-xs text-gray-500 truncate">Client sessions</p>
                           </div>
                         </div>
                       </label>
-                      <label className={`relative p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 ${
+                      <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
                         scheduleType === 'non-training' 
-                          ? 'border-orange-500 bg-orange-50' 
-                          : 'border-gray-200 hover:border-gray-300'
+                          ? 'border-orange-500 bg-orange-50/50 shadow-sm' 
+                          : 'border-gray-200 hover:border-gray-300 bg-white'
                       }`}>
                         <input 
                           type="radio" 
@@ -2646,14 +3659,14 @@ const SchedulePage = () => {
                           className="sr-only" 
                         />
                         <div className="flex items-center gap-2">
-                          <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center ${
+                          <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
                             scheduleType === 'non-training' ? 'border-orange-500' : 'border-gray-300'
                           }`}>
                             {scheduleType === 'non-training' && <div className="w-1.5 h-1.5 bg-orange-500 rounded-full"></div>}
                           </div>
-                          <div>
+                          <div className="min-w-0">
                             <p className="font-medium text-gray-900 text-sm">Non-Training</p>
-                            <p className="text-xs text-gray-500">Internal tasks & meetings</p>
+                            <p className="text-xs text-gray-500 truncate">Internal tasks</p>
                           </div>
                         </div>
                       </label>
@@ -2662,227 +3675,415 @@ const SchedulePage = () => {
 
                   {/* Step 2: Conditional Fields */}
                   {scheduleType === 'training' ? (
-                    <div className="space-y-3">
-                      <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                          Training Details
-                        </label>
-                        <div className="space-y-2">
+                    <div className="space-y-4">
+                      <div className={cn(cardStyles.surface, 'space-y-3 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                        <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Training Details</label>
                           <div>
-                            <label className="text-xs font-medium text-gray-600 mb-1 block">Trainer Name</label>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Trainer Name</label>
                             <input 
                               type="text" 
                               name="trainer" 
                               value={selectedTrainer || ''}
                               readOnly
-                              className="w-full px-2 py-1.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-600 text-xs cursor-not-allowed" 
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md bg-gray-50 text-gray-600 text-sm cursor-not-allowed" 
                             />
                           </div>
-                          <div className="grid grid-cols-3 gap-2">
+                        <div className="grid grid-cols-3 gap-3">
                             <div>
-                              <label className="text-xs font-medium text-gray-600 mb-1 block">Role</label>
+                            <label className="text-xs font-medium text-gray-700 mb-1.5 block">Role *</label>
                               <select 
                                 name="role" 
                                 value={role} 
                                 onChange={e => setRole(e.target.value)} 
                                 required
-                                className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs"
+                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
                               >
-                                <option value="" disabled>Select Role</option>
+                              <option value="" disabled>Select</option>
                                 <option value="TA">TA</option>
                                 <option value="Trainer">Trainer</option>
                               </select>
                             </div>
-                            <div>
-                              <label className="text-xs font-medium text-gray-600 mb-1 block">Client</label>
-                              <input 
-                                type="text" 
+                          <div className="col-span-2">
+                            <label className="text-xs font-medium text-gray-700 mb-1.5 block">Client *</label>
+                              <select 
                                 name="client" 
                                 required 
-                                placeholder="Client name"
-                                className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs" 
-                              />
+                                value={selectedClient || ''}
+                                onChange={(e) => {
+                                  setSelectedClient(e.target.value);
+                                  const client = clientsWithPMs.find(c => c.clientId === e.target.value);
+                                  if (client) {
+                                    setForm({ ...form, selectedClientData: client });
+                                  }
+                                }}
+                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors" 
+                              >
+                                <option value="">Select Client</option>
+                                {clientsWithPMs.map(client => (
+                                  <option key={client.clientId} value={client.clientId}>
+                                    {client.name} ({client.programManagerIds?.length || 0} PM{client.programManagerIds?.length !== 1 ? 's' : ''})
+                                  </option>
+                                ))}
+                              </select>
                             </div>
+                        </div>
+                        {/* PM Selection - Instant display with smooth animation */}
+                        <AnimatePresence>
+                            {selectedClient && availablePMs.length > 0 && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              transition={{ duration: 0.2 }}
+                              className="overflow-hidden"
+                            >
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <label className="text-xs font-medium text-gray-700">
+                                    Program Managers <span className="text-gray-500 font-normal">({selectedPMs.length} selected)</span> *
+                                </label>
+                                  {selectedPMs.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedPMs([])}
+                                      className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="border border-gray-200 rounded-md p-2.5 bg-gray-50/50 max-h-36 overflow-y-auto">
+                                  <div className="space-y-1.5">
+                                    {availablePMs.map(pm => {
+                                      const pmId = pm.uid || pm.id;
+                                      const pmName = pm.displayName || pm.name || pm.email?.split('@')[0] || 'Unknown';
+                                      const isSelected = selectedPMs.includes(pmId);
+                                      return (
+                                        <label
+                                          key={pmId}
+                                          className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white rounded-md cursor-pointer transition-colors group"
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={isSelected}
+                                            onChange={(e) => {
+                                              if (e.target.checked) {
+                                                setSelectedPMs([...selectedPMs, pmId]);
+                                              } else {
+                                                setSelectedPMs(selectedPMs.filter(id => id !== pmId));
+                                              }
+                                            }}
+                                            className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-2 cursor-pointer"
+                                          />
+                                          <div className="flex-1 min-w-0">
+                                            <span className="text-sm font-medium text-gray-900">{pmName}</span>
+                                            <span className="text-xs text-gray-500 ml-1.5 truncate block">{pm.email}</span>
+                                          </div>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                  {selectedPMs.length === 0 && (
+                                    <p className="text-xs text-red-600 mt-2 font-medium">Please select at least one Program Manager</p>
+                                  )}
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                        
+                        {selectedClient && availablePMs.length === 0 && allPMs.length > 0 && (
+                          <div className="px-3 py-2 bg-orange-50 border border-orange-200 rounded-md">
+                            <p className="text-xs text-orange-700 font-medium">
+                              ⚠️ No Program Managers assigned to this client. Please assign PMs in Client Management first.
+                            </p>
+                          </div>
+                            )}
+                        
                             <div>
-                              <label className="text-xs font-medium text-gray-600 mb-1 block">Course</label>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Course *</label>
                               <input 
                                 type="text" 
                                 name="course" 
                                 required 
-                                placeholder="Course name"
-                                className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs" 
+                            placeholder="Enter course name"
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors" 
                               />
                             </div>
-                          </div>
+                        
                           <div>
-                            <label className="text-xs font-medium text-gray-600 mb-1 block">Description</label>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Description *</label>
                             <textarea 
                               name="description" 
                               required 
-                              placeholder="Session description"
+                            placeholder="Enter session description"
                               rows="3"
-                              className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs resize-none" 
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm resize-none bg-white transition-colors" 
                             />
-                          </div>
                         </div>
                       </div>
                     </div>
                   ) : (
-                    <div className="space-y-3">
-                      <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                          Task Details
-                        </label>
-                        <div className="space-y-2">
+                    <div className="space-y-4">
+                      <div className={cn(cardStyles.surface, 'space-y-3 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                        <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Task Details</label>
                           <div>
-                            <label className="text-xs font-medium text-gray-600 mb-1 block">Trainer Name</label>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Trainer Name</label>
                             <input 
                               type="text" 
                               name="trainer" 
                               value={selectedTrainer || ''}
                               readOnly
-                              className="w-full px-2 py-1.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-600 text-xs cursor-not-allowed" 
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md bg-gray-50 text-gray-600 text-sm cursor-not-allowed" 
                             />
                           </div>
-                          <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-2 gap-3">
                             <div>
-                              <label className="text-xs font-medium text-gray-600 mb-1 block">Task Type</label>
+                            <label className="text-xs font-medium text-gray-700 mb-1.5 block">Task Type *</label>
                               <select 
                                 name="taskType" 
                                 value={taskType} 
                                 onChange={e => setTaskType(e.target.value)} 
-                                required
-                                className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs"
+                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm bg-white transition-colors"
                               >
-                                <option value="" disabled>Select Task Type</option>
-                                <option value="Question creation">Question creation</option>
-                                <option value="QC">QC</option>
+                              <option value="Question creation">Question Creation</option>
+                              <option value="QC">Quality Check</option>
                                 <option value="Upskilling">Upskilling</option>
                                 <option value="Others">Others</option>
                               </select>
                             </div>
                             <div>
-                              <label className="text-xs font-medium text-gray-600 mb-1 block">Task Details</label>
+                            <label className="text-xs font-medium text-gray-700 mb-1.5 block">Task Details *</label>
                               <input 
                                 type="text" 
                                 name="taskDetails" 
                                 required 
-                                placeholder="Task details"
-                                className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs" 
+                              placeholder="Brief description"
+                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm bg-white transition-colors" 
                               />
                             </div>
                           </div>
                           <div>
-                            <label className="text-xs font-medium text-gray-600 mb-1 block">Description</label>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Description *</label>
                             <textarea 
                               name="description" 
                               required 
-                              placeholder="Task description"
+                            placeholder="Enter detailed description"
                               rows="3"
-                              className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs resize-none" 
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm resize-none bg-white transition-colors" 
                             />
-                          </div>
                         </div>
                       </div>
                     </div>
                   )}
                 </div>
                 
-                {/* Right Side: Date Range Selection */}
-                <div className="w-1/2 p-4 bg-gray-50 border-l border-gray-100 overflow-y-auto">
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 mb-3">
-                      <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
-                      <h4 className="text-sm font-semibold text-gray-700">Select Dates</h4>
+                {/* Right Side: Date Range & Summary */}
+                <div className="flex h-full flex-col gap-5 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 px-5 py-5 shadow-sm lg:px-6 lg:py-6">
+                  <div className={cn(cardStyles.surface, 'space-y-4 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-indigo-500" />
+                    <h4 className="text-sm font-semibold text-slate-800">Select Dates</h4>
                     </div>
+                  <p className="text-xs text-slate-500">
+                      Define the range for this assignment and exclude dates that should be skipped.
+                  </p>
                     <DateRangeSelector 
                       onDateRangeChange={setSelectedDateRange} 
                       initialStartDate={selectedDate}
                       initialEndDate={selectedDate}
                     />
-                    
-                    {/* Quick Tips - More Compact */}
-                    <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
-                      <h5 className="text-xs font-medium text-blue-900 mb-1">💡 Quick Tips</h5>
-                      <ul className="text-xs text-blue-800 space-y-0.5">
-                        <li>• Select date range and exclude specific dates if needed</li>
-                        <li>• System automatically detects scheduling conflicts</li>
-                        <li>• You can extend existing tasks or create new ones</li>
+                  <div className="rounded-lg border border-blue-100 bg-blue-50/80 p-3 text-xs text-blue-700">
+                    <h5 className="mb-1 font-semibold uppercase tracking-wide text-blue-600">Quick Tips</h5>
+                    <ul className="space-y-1">
+                        <li>• Target the full engagement window; you can trim dates later.</li>
+                        <li>• Use exclusions for campus holidays, leaves, or custom gaps.</li>
+                        <li>• Conflict checks run automatically when you save.</li>
                       </ul>
+                    </div>
+                  </div>
+
+                  <div className={cn(cardStyles.surface, 'space-y-3 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-slate-800">Live Summary</h4>
+                    <span className="text-xs font-medium text-slate-400">Auto-updates</span>
+                  </div>
+                  <div className="grid gap-3">
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                        <span className="font-semibold text-slate-700">Trainer:</span> {scheduleSummary.trainerName}
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                        <span className="font-semibold text-slate-700">Type:</span> {scheduleSummary.taskTypeLabel}
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                        <span className="font-semibold text-slate-700">Date Range:</span> {scheduleSummary.dateRange}
+                    </div>
+                      {scheduleType === 'training' && (
+                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                          <span className="font-semibold text-slate-700">Client:</span> {scheduleSummary.clientName}
+                        </div>
+                      )}
+                    {scheduleSummary.excludedDates.length > 0 && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        <span className="font-semibold text-amber-800">Excluded:</span>{' '}
+                        {scheduleSummary.excludedDates.join(', ')}
+                      </div>
+                    )}
+                      {scheduleType === 'training' && (
+                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                          <span className="font-semibold text-slate-700">Program Managers:</span>
+                          <div className="flex flex-wrap gap-1.5 text-xs mt-1">
+                            {selectedPMNames.length > 0 ? (
+                              selectedPMNames.map((name) => (
+                                <span
+                                  key={name}
+                                  className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-blue-600"
+                                >
+                                  {name}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-500">
+                                PM notifications pending
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                    )}
                     </div>
                   </div>
                 </div>
               </form>
               
               {/* Footer */}
-              <div className="p-4 border-t border-gray-100 bg-gray-50">
-                <div className="space-y-3">
+              <div className="p-4 border-t border-gray-200 bg-white">
+                <div className="flex items-center justify-between gap-4">
                   {/* Email Notification Option */}
-                  <div className="flex items-center space-x-2">
+                  <div className="flex items-center gap-2.5">
                     <Checkbox
                       id="send-email-allocate"
                       checked={sendEmailOnCreate}
                       onCheckedChange={(checked) => setSendEmailOnCreate(checked)}
+                      className="border-gray-300"
                     />
                     <label
                       htmlFor="send-email-allocate"
                       className="text-sm font-medium text-gray-700 cursor-pointer flex items-center gap-2"
                     >
                       <Mail className="h-4 w-4 text-gray-500" />
-                      Send email notification to trainer
+                      Send email notification
                     </label>
                   </div>
-                  <div className="flex justify-between items-center">
-                    <div className="text-xs text-gray-500">
-                      Selected trainer: <span className="font-medium text-gray-700">{selectedTrainer || 'None'}</span>
+                  
+                  {/* Status and Actions */}
+                  <div className="flex items-center gap-3">
+                    {selectedTrainer && (
+                      <div className="text-xs text-gray-600 hidden sm:block">
+                        Ready for <span className="font-semibold text-gray-900">{selectedTrainer}</span>
                     </div>
-                    <Button type="submit" form="allocate-form" className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2">
+                    )}
+                    <div className="flex gap-2">
+                      <Button 
+                        type="button" 
+                        onClick={() => {
+                          setIsAllocateModalOpen(false);
+                          setSendEmailOnCreate(true); // Reset to default
+                        }} 
+                        variant="outline" 
+                        className="px-4 py-2 text-sm border-gray-300 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </Button>
+                      <Button 
+                        type="submit" 
+                        form="allocate-form" 
+                        className="px-5 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
+                      >
                       Allocate Schedule
                     </Button>
-                  </div>
+                    </div>
                 </div>
               </div>
             </div>
+            </motion.div>
           </motion.div>
-        )}
       </AnimatePresence>
+      , document.body)}
 
       {/* Schedule Modal */}
-      {isScheduleModalOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[85vh] flex flex-col">
+      {isScheduleModalOpen && createPortal(
+      <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            className="fixed top-0 left-0 right-0 bottom-0 w-screen h-screen bg-black/80 flex items-center justify-center z-50 p-4"
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+            variants={modalVariants}
+            role="presentation"
+          >
+            <motion.div
+              className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] flex flex-col border border-gray-200"
+              variants={modalContentVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              transition={modalContentTransition}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="schedule-modal-title"
+            >
             {/* Header */}
-            <div className="p-4 border-b border-gray-100">
-              <div className="flex justify-between items-center">
+            <div className="p-5 border-b border-gray-200 bg-white">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={closeScheduleModal}
+                    className="h-8 w-8 rounded-md hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+                    aria-label="Back"
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                  </Button>
                 <div>
-                  <h3 className="text-xl font-semibold text-gray-900">Schedule New Task</h3>
+                  <h3 id="schedule-modal-title" className="text-lg font-semibold text-gray-900">Schedule New Task</h3>
                   <p className="text-xs text-gray-500 mt-1">
                     Allocate training or non-training tasks for your team members
                   </p>
+                  </div>
                 </div>
-                <Button variant="ghost" size="icon" onClick={closeScheduleModal} className="hover:bg-gray-100 h-8 w-8">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={closeScheduleModal}
+                  className="h-8 w-8 rounded-md hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+                  aria-label="Close"
+                >
                   <X className="h-4 w-4" />
                 </Button>
               </div>
             </div>
             
             {/* Content */}
-            <form id="schedule-form" onSubmit={handleScheduleSubmit} className="flex-1 flex overflow-hidden">
+            <div className="border-b border-slate-200 bg-slate-50 px-6 py-4">
+              <WizardSteps title="Scheduling Steps" steps={scheduleWizardSteps} />
+            </div>
+
+            <form
+              id="schedule-form"
+              onSubmit={handleScheduleSubmit}
+              className="flex-1 grid grid-cols-1 gap-6 overflow-hidden lg:grid-cols-[minmax(0,0.58fr)_minmax(0,0.42fr)] xl:grid-cols-[minmax(0,0.6fr)_minmax(0,0.4fr)]"
+            >
               {/* Left Side: Form Fields */}
-              <div className="w-1/2 p-4 space-y-4 overflow-y-auto">
+              <div className={cn('overflow-y-auto border border-slate-200 bg-white px-6 py-6', sectionSpacing, 'rounded-xl shadow-sm')}>
                 {/* Step 1: Task Type Selection */}
-              <div className="space-y-2">
-                  <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                    Task Type
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className={`relative p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 ${
+                <div className={cn(cardStyles.surface, 'space-y-4 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Task Type</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
                       scheduleType === 'training' 
-                        ? 'border-blue-500 bg-blue-50' 
-                        : 'border-gray-200 hover:border-gray-300'
+                        ? 'border-blue-500 bg-blue-50/50 shadow-sm' 
+                        : 'border-gray-200 hover:border-gray-300 bg-white'
                     }`}>
                       <input 
                         type="radio" 
@@ -2893,21 +4094,21 @@ const SchedulePage = () => {
                         className="sr-only" 
                       />
                       <div className="flex items-center gap-2">
-                        <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center ${
+                        <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
                           scheduleType === 'training' ? 'border-blue-500' : 'border-gray-300'
                         }`}>
                           {scheduleType === 'training' && <div className="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>}
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <p className="font-medium text-gray-900 text-sm">Training</p>
-                          <p className="text-xs text-gray-500">Client-facing sessions</p>
+                          <p className="text-xs text-gray-500 truncate">Client sessions</p>
                         </div>
                       </div>
-                  </label>
-                    <label className={`relative p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 ${
+                    </label>
+                    <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
                       scheduleType === 'non-training' 
-                        ? 'border-orange-500 bg-orange-50' 
-                        : 'border-gray-200 hover:border-gray-300'
+                        ? 'border-orange-500 bg-orange-50/50 shadow-sm' 
+                        : 'border-gray-200 hover:border-gray-300 bg-white'
                     }`}>
                       <input 
                         type="radio" 
@@ -2918,46 +4119,44 @@ const SchedulePage = () => {
                         className="sr-only" 
                       />
                       <div className="flex items-center gap-2">
-                        <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center ${
+                        <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
                           scheduleType === 'non-training' ? 'border-orange-500' : 'border-gray-300'
                         }`}>
                           {scheduleType === 'non-training' && <div className="w-1.5 h-1.5 bg-orange-500 rounded-full"></div>}
                         </div>
-                        <div>
+                        <div className="min-w-0">
                           <p className="font-medium text-gray-900 text-sm">Non-Training</p>
-                          <p className="text-xs text-gray-500">Internal tasks & meetings</p>
+                          <p className="text-xs text-gray-500 truncate">Internal tasks</p>
                         </div>
                       </div>
                     </label>
+                  </div>
                 </div>
-              </div>
 
                 {/* Step 2: Trainer Selection */}
-                <div className="space-y-1">
-                  <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                    <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                    Select Trainer
-                  </label>
+                <div className={cn(cardStyles.surface, 'space-y-4 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                  <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Trainer</label>
+                  <p className="text-xs text-slate-500">Search by name; only active trainers appear in this list.</p>
                   <div className="relative">
                     <button
                       ref={trainerTriggerRef}
                       type="button"
                       onClick={handleToggleTrainerDropdown}
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm flex justify-between items-center text-left"
+                      className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-150 text-sm flex justify-between items-center text-left bg-white hover:border-gray-300"
                     >
-                      <span className="truncate">{selectedTrainer || 'Choose a trainer...'}</span>
-                      <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${isTrainerDropdownOpen ? 'rotate-180' : ''}`} />
+                      <span className="truncate text-gray-900">{selectedTrainer || 'Choose a trainer...'}</span>
+                      <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform duration-200 flex-shrink-0 ${isTrainerDropdownOpen ? 'rotate-180' : ''}`} />
                     </button>
                     <AnimatePresence>
                       {isTrainerDropdownOpen && (
                         <motion.div
                           ref={trainerDropdownContentRef}
-                          initial={{ opacity: 0, scale: 0.95 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          exit={{ opacity: 0, scale: 0.95 }}
+                          initial={{ opacity: 0, scale: 0.95, y: -5 }}
+                          animate={{ opacity: 1, scale: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95, y: -5 }}
                           transition={{ duration: 0.15, ease: "easeOut" }}
                           style={dropdownStyle}
-                          className="fixed z-[999] w-72 bg-white shadow-xl rounded-lg border border-gray-200 max-h-64 flex flex-col"
+                          className="fixed z-[999] w-72 bg-white shadow-lg rounded-md border border-gray-200 max-h-64 flex flex-col"
                         >
                           <div className="p-2 border-b border-gray-100">
                             <input
@@ -2965,7 +4164,7 @@ const SchedulePage = () => {
                               placeholder="Search trainers..."
                               value={trainerSearchTerm}
                               onChange={e => setTrainerSearchTerm(e.target.value)}
-                              className="w-full px-2 py-1.5 border border-gray-200 rounded-md text-xs focus:ring-1 focus:ring-blue-400 focus:border-transparent"
+                              className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
                             />
                           </div>
                           <ul className="py-1 overflow-y-auto">
@@ -2978,7 +4177,7 @@ const SchedulePage = () => {
                                     setSelectedTrainer(t.name);
                                     setIsTrainerDropdownOpen(false);
                                   }}
-                                  className="px-4 py-2 text-sm text-gray-800 hover:bg-blue-50 cursor-pointer transition-colors duration-150"
+                                  className="px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 cursor-pointer transition-colors duration-100"
                                 >
                                   {t.name}
                                 </li>
@@ -2991,103 +4190,189 @@ const SchedulePage = () => {
                   <input type="hidden" name="trainer" value={selectedTrainer} required />
                 </div>
 
-              {/* Step 3: Conditional Fields */}
-              {scheduleType === 'training' ? (
-                  <div className="space-y-3">
-                    <div className="space-y-1">
-                      <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                        <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                        Training Details
-                      </label>
-                      <div className="grid grid-cols-3 gap-2">
+                {/* Step 3: Conditional Fields */}
+                {scheduleType === 'training' ? (
+                  <div className="space-y-4">
+                    <div className="space-y-3">
+                      <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Training Details</label>
+                      <div className="grid grid-cols-3 gap-3">
                         <div>
-                          <label className="text-xs font-medium text-gray-600 mb-1 block">Role</label>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Role *</label>
                           <select 
                             name="role" 
                             value={role} 
                             onChange={e => setRole(e.target.value)} 
                             required
-                            className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs"
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
                           >
-                            <option value="" disabled>Select Role</option>
-                      <option value="TA">TA</option>
-                      <option value="Trainer">Trainer</option>
-                    </select>
-                  </div>
-                        <div>
-                          <label className="text-xs font-medium text-gray-600 mb-1 block">Client</label>
-                          <input 
-                            type="text" 
+                            <option value="" disabled>Select</option>
+                            <option value="TA">TA</option>
+                            <option value="Trainer">Trainer</option>
+                          </select>
+                        </div>
+                        <div className="col-span-2">
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Client *</label>
+                          <select 
                             name="client" 
                             required 
-                            placeholder="Client name"
-                            className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs" 
-                          />
-                  </div>
-                        <div>
-                          <label className="text-xs font-medium text-gray-600 mb-1 block">Course</label>
-                          <input 
-                            type="text" 
-                            name="course" 
-                            required 
-                            placeholder="Course name"
-                            className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs" 
-                          />
-                  </div>
-                  </div>
+                            value={selectedClient || ''}
+                            onChange={(e) => {
+                              const clientId = e.target.value;
+                              setSelectedClient(clientId);
+                              const client = clientsWithPMs.find(c => c.clientId === clientId);
+                              if (client) {
+                                setForm({ ...form, selectedClientData: client });
+                              } else {
+                                setSelectedPMs([]);
+                                setAvailablePMs([]);
+                              }
+                            }}
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors" 
+                          >
+                            <option value="">Select Client</option>
+                            {clientsWithPMs.map(client => (
+                              <option key={client.clientId} value={client.clientId}>
+                                {client.name} ({client.programManagerIds?.length || 0} PM{client.programManagerIds?.length !== 1 ? 's' : ''})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      
+                      {/* PM Selection - Instant display with smooth animation */}
+                      <AnimatePresence>
+                        {selectedClient && availablePMs.length > 0 && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="overflow-hidden"
+                          >
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <label className="text-xs font-medium text-gray-700">
+                                  Program Managers <span className="text-gray-500 font-normal">({selectedPMs.length} selected)</span> *
+                                </label>
+                                {selectedPMs.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedPMs([])}
+                                    className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                                  >
+                                    Clear
+                                  </button>
+                                )}
+                              </div>
+                              <div className="border border-gray-200 rounded-md p-2.5 bg-gray-50/50 max-h-36 overflow-y-auto">
+                                <div className="space-y-1.5">
+                                  {availablePMs.map(pm => {
+                                    const pmId = pm.uid || pm.id;
+                                    const pmName = pm.displayName || pm.name || pm.email?.split('@')[0] || 'Unknown';
+                                    const isSelected = selectedPMs.includes(pmId);
+                                    return (
+                                      <label
+                                        key={pmId}
+                                        className="flex items-center gap-2.5 px-2 py-1.5 hover:bg-white rounded-md cursor-pointer transition-colors group"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={isSelected}
+                                          onChange={(e) => {
+                                            if (e.target.checked) {
+                                              setSelectedPMs([...selectedPMs, pmId]);
+                                            } else {
+                                              setSelectedPMs(selectedPMs.filter(id => id !== pmId));
+                                            }
+                                          }}
+                                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 focus:ring-2 cursor-pointer"
+                                        />
+                                        <div className="flex-1 min-w-0">
+                                          <span className="text-sm font-medium text-gray-900">{pmName}</span>
+                                          <span className="text-xs text-gray-500 ml-1.5 truncate block">{pm.email}</span>
+                                        </div>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                                {selectedPMs.length === 0 && (
+                                  <p className="text-xs text-red-600 mt-2 font-medium">Please select at least one Program Manager</p>
+                                )}
+                              </div>
+            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                      
+                      {selectedClient && availablePMs.length === 0 && allPMs.length > 0 && (
+                        <div className="px-3 py-2 bg-orange-50 border border-orange-200 rounded-md">
+                          <p className="text-xs text-orange-700 font-medium">
+                            ⚠️ No Program Managers assigned to this client. Please assign PMs in Client Management first.
+                          </p>
+                        </div>
+                      )}
+                      
                       <div>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Description</label>
+                        <label className="text-xs font-medium text-gray-700 mb-1.5 block">Course *</label>
+                        <input 
+                          type="text" 
+                          name="course" 
+                          required 
+                          placeholder="Enter course name"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors" 
+                        />
+                      </div>
+                      
+                      <div>
+                        <label className="text-xs font-medium text-gray-700 mb-1.5 block">Description *</label>
                         <textarea 
                           name="description" 
                           required 
-                          placeholder="Session description"
-                          rows="2"
-                          className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-xs resize-none" 
+                          placeholder="Enter session description"
+                          rows="3"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm resize-none bg-white transition-colors" 
                         />
                       </div>
-                  </div>
+                    </div>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    <div className="space-y-1">
-                      <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                        <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                        Task Details
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-4">
+                    <div className="space-y-3">
+                      <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Task Details</label>
+                      <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <label className="text-xs font-medium text-gray-600 mb-1 block">Task Type</label>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Task Type *</label>
                           <select 
                             name="taskType" 
                             value={taskType} 
                             onChange={e => setTaskType(e.target.value)} 
-                            className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent text-xs"
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm bg-white transition-colors"
                           >
                             <option value="Question creation">Question Creation</option>
                             <option value="QC">Quality Check</option>
-                      <option value="Upskilling">Upskilling</option>
-                      <option value="Others">Others</option>
-                    </select>
-                  </div>
+                            <option value="Upskilling">Upskilling</option>
+                            <option value="Others">Others</option>
+                          </select>
+                        </div>
                         <div>
-                          <label className="text-xs font-medium text-gray-600 mb-1 block">Task Details</label>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Task Details *</label>
                           <input 
                             type="text" 
                             name="taskDetails" 
                             required 
                             placeholder="Brief description"
-                            className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent text-xs" 
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm bg-white transition-colors" 
                           />
                         </div>
                       </div>
                       <div>
-                        <label className="text-xs font-medium text-gray-600 mb-1 block">Description</label>
+                        <label className="text-xs font-medium text-gray-700 mb-1.5 block">Description *</label>
                         <textarea 
                           name="description" 
                           required 
-                          placeholder="Detailed description"
-                          rows="2"
-                          className="w-full px-2 py-1.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent text-xs resize-none" 
+                          placeholder="Enter detailed description"
+                          rows="3"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm resize-none bg-white transition-colors" 
                         />
                       </div>
                     </div>
@@ -3095,93 +4380,161 @@ const SchedulePage = () => {
                 )}
               </div>
               
-              {/* Right Side: Date Range Selection */}
-              <div className="w-1/2 p-4 bg-gray-50 border-l border-gray-100 overflow-y-auto">
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
-                    <h4 className="text-sm font-semibold text-gray-700">Select Dates</h4>
+                {/* Right Side: Date Range & Summary */}
+              <div className="flex h-full flex-col gap-5 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 px-5 py-5 shadow-sm lg:px-6 lg:py-6">
+                <div className={cn(cardStyles.surface, 'space-y-4 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-indigo-500" />
+                    <h4 className="text-sm font-semibold text-slate-800">Select Dates</h4>
                   </div>
-                  <DateRangeSelector onDateRangeChange={setSelectedDateRange} />
-                  
-                  {/* Quick Tips - More Compact */}
-                  <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
-                    <h5 className="text-xs font-medium text-blue-900 mb-1">💡 Quick Tips</h5>
-                    <ul className="text-xs text-blue-800 space-y-0.5">
-                      <li>• Select date range and exclude specific dates if needed</li>
-                      <li>• System automatically detects scheduling conflicts</li>
-                      <li>• You can extend existing tasks or create new ones</li>
+                  <p className="text-xs text-slate-500">
+                    Define the range for this assignment and exclude dates that should be skipped.
+                  </p>
+                    <DateRangeSelector onDateRangeChange={setSelectedDateRange} />
+                  <div className="rounded-lg border border-blue-100 bg-blue-50/80 p-3 text-xs text-blue-700">
+                    <h5 className="mb-1 font-semibold uppercase tracking-wide text-blue-600">Quick Tips</h5>
+                    <ul className="space-y-1">
+                      <li>• Target the full engagement window; you can trim dates later.</li>
+                      <li>• Use exclusions for campus holidays, leaves, or custom gaps.</li>
+                      <li>• Conflict checks run automatically when you save.</li>
                     </ul>
+                  </div>
+                  </div>
+                  
+                <div className={cn(cardStyles.surface, 'space-y-3 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-slate-800">Live Summary</h4>
+                    <span className="text-xs font-medium text-slate-400">Auto-updates</span>
+                    </div>
+                  <div className="grid gap-3">
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                      <span className="font-semibold text-slate-700">Trainer:</span> {scheduleSummary.trainerName}
+                  </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                      <span className="font-semibold text-slate-700">Type:</span> {scheduleSummary.taskTypeLabel}
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                      <span className="font-semibold text-slate-700">Date Range:</span> {scheduleSummary.dateRange}
+                    </div>
+                    {scheduleType === 'training' && (
+                      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                        <span className="font-semibold text-slate-700">Client:</span> {scheduleSummary.clientName}
+                      </div>
+                    )}
+                    {scheduleSummary.excludedDates.length > 0 && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        <span className="font-semibold text-amber-800">Excluded:</span>{' '}
+                        {scheduleSummary.excludedDates.join(', ')}
+                      </div>
+                    )}
+                    {scheduleType === 'training' && (
+                      <div className="flex flex-wrap gap-1.5 text-xs">
+                        {selectedPMNames.length > 0 ? (
+                          selectedPMNames.map((name) => (
+                            <span
+                              key={name}
+                              className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-blue-600"
+                            >
+                              {name}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-500">
+                            PM notifications pending
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             </form>
             
             {/* Footer */}
-            <div className="p-4 border-t border-gray-100 bg-gray-50">
-              <div className="space-y-3">
+            <div className="p-4 border-t border-gray-200 bg-white">
+              <div className="flex items-center justify-between gap-4">
                 {/* Email Notification Option */}
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center gap-2.5">
                   <Checkbox
                     id="send-email-create"
                     checked={sendEmailOnCreate}
                     onCheckedChange={(checked) => setSendEmailOnCreate(checked)}
+                    className="border-gray-300"
                   />
                   <label
                     htmlFor="send-email-create"
                     className="text-sm font-medium text-gray-700 cursor-pointer flex items-center gap-2"
                   >
                     <Mail className="h-4 w-4 text-gray-500" />
-                    Send email notification to trainer
+                    Send email notification
                   </label>
                 </div>
-                <div className="flex justify-between items-center">
-                  <div className="text-xs text-gray-500">
-                    {selectedTrainer && (
-                      <span>Ready to schedule for <span className="font-medium text-gray-700">{selectedTrainer}</span></span>
-                    )}
-                  </div>
+                
+                {/* Status and Actions */}
+                <div className="flex items-center gap-3">
+                  {selectedTrainer && (
+                    <div className="text-xs text-gray-600 hidden sm:block">
+                      Ready for <span className="font-semibold text-gray-900">{selectedTrainer}</span>
+                    </div>
+                  )}
                   <div className="flex gap-2">
-                    <Button type="button" onClick={closeScheduleModal} variant="outline" className="px-4 py-1.5 text-sm">
+                    <Button 
+                      type="button" 
+                      onClick={closeScheduleModal} 
+                      variant="outline" 
+                      className="px-4 py-2 text-sm border-gray-300 hover:bg-gray-50"
+                    >
                       Cancel
                     </Button>
-                    <Button type="submit" form="schedule-form" className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700">
+                    <Button 
+                      type="submit" 
+                      form="schedule-form" 
+                      className="px-5 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white shadow-sm"
+                    >
                       Schedule Task
                     </Button>
-                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+            </motion.div>
+        </motion.div>
+      </AnimatePresence>
+      , document.body)}
 
       {/* Delete Confirmation Modal */}
-      <AnimatePresence>
-        {isDeleteConfirmModalOpen && (
+      {isDeleteConfirmModalOpen && createPortal(
+      <AnimatePresence mode="wait" initial={false}>
           <motion.div
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            className="fixed top-0 left-0 right-0 bottom-0 w-screen h-screen bg-black/80 flex items-center justify-center z-[60] p-4"
             initial="hidden"
             animate="visible"
             exit="exit"
             variants={modalVariants}
+            role="presentation"
           >
             <motion.div
               className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md"
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
+              variants={modalContentVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              transition={modalContentTransition}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-modal-title"
+              aria-describedby="delete-modal-description"
             >
               <div className="flex items-start gap-4">
                 <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100 sm:mx-0 sm:h-10 sm:w-10">
                   <AlertTriangle className="h-6 w-6 text-red-600" aria-hidden="true" />
                 </div>
                 <div className="mt-0 text-left">
-                  <h3 className="text-lg leading-6 font-medium text-gray-900">
+                  <h3 id="delete-modal-title" className="text-lg leading-6 font-medium text-gray-900">
                     Delete Task
                   </h3>
                   <div className="mt-2">
-                    <p className="text-sm text-gray-500">
+                    <p id="delete-modal-description" className="text-sm text-gray-500">
                       Are you sure you want to delete this task?
                     </p>
                     {deleteTarget && (
@@ -3196,15 +4549,11 @@ const SchedulePage = () => {
                           }
                         </p>
                         <p className="text-sm text-gray-600">
-                          Date: {deleteTarget.entry.startDate ? new Date(deleteTarget.entry.startDate).toLocaleDateString('en-US', { 
-                            year: 'numeric', 
-                            month: 'long', 
-                            day: 'numeric' 
-                          }) : (deleteTarget.date ? new Date(deleteTarget.date).toLocaleDateString('en-US', { 
-                            year: 'numeric', 
-                            month: 'long', 
-                            day: 'numeric' 
-                          }) : 'N/A')}
+                          Date: {deleteTarget.entry.startDate 
+                            ? formatDateForDisplay(deleteTarget.entry.startDate)
+                            : (deleteTarget.date 
+                              ? formatDateForDisplay(deleteTarget.date)
+                              : 'N/A')}
                         </p>
                       </div>
                     )}
@@ -3250,95 +4599,132 @@ const SchedulePage = () => {
               </div>
             </motion.div>
           </motion.div>
-        )}
       </AnimatePresence>
+      , document.body)}
 
       {/* Enhanced Edit Modal */}
-      <AnimatePresence>
-        {isEditModalOpen && (
+      {isEditModalOpen && createPortal(
+      <AnimatePresence mode="wait" initial={false}>
           <motion.div
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            className="fixed top-0 left-0 right-0 bottom-0 w-screen h-screen bg-black/80 flex items-center justify-center z-50 p-4"
             initial="hidden"
             animate="visible"
             exit="exit"
             variants={modalVariants}
+            role="presentation"
           >
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[85vh] flex flex-col">
+            <motion.div
+              className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col border border-slate-200"
+              variants={modalContentVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              transition={modalContentTransition}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="edit-task-modal-title"
+            >
               {/* Header */}
-              <div className="p-4 border-b border-gray-100">
-                <div className="flex justify-between items-center">
+              <div className="p-5 border-b border-slate-200 bg-white">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={cancelEditTask}
+                    className="h-9 w-9 rounded-lg text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+                      aria-label="Back"
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                    </Button>
                   <div>
-                    <h3 className="text-xl font-semibold text-gray-900">
+                      <h3 id="edit-task-modal-title" className="text-lg font-semibold text-slate-900">
                       {isBulkEditMode ? 'Bulk Edit Task' : 'Edit Task'}
                     </h3>
-                    <p className="text-xs text-gray-500 mt-1">
+                      <p className="text-sm text-slate-500">
                       {isBulkEditMode 
-                        ? 'Update this task across multiple days' 
-                        : 'Modify task details for the selected day'
-                      }
+                          ? 'Update this assignment across multiple days.'
+                          : 'Modify task details for the selected day.'}
                     </p>
+                    </div>
                   </div>
-                  <Button variant="ghost" size="icon" onClick={cancelEditTask} className="hover:bg-gray-100 h-8 w-8">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={cancelEditTask}
+                    className="h-9 w-9 rounded-lg text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
+                    aria-label="Close"
+                  >
                     <X className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
+
+              <div className="border-b border-slate-200 bg-slate-50 px-6 py-4">
+                <WizardSteps title="Update Steps" steps={allocateWizardSteps} />
+              </div>
               
               {/* Content */}
-              <form onSubmit={saveEditTask} className="flex-1 flex overflow-hidden">
+              <form
+                onSubmit={saveEditTask}
+                className="flex-1 grid grid-cols-1 gap-6 overflow-hidden lg:grid-cols-[minmax(0,0.58fr)_minmax(0,0.42fr)] xl:grid-cols-[minmax(0,0.6fr)_minmax(0,0.4fr)]"
+              >
                 {/* Left Side: Form Fields */}
-                <div className="w-1/2 p-4 space-y-4 overflow-y-auto">
-                  {/* Bulk Edit Toggle */}
-                  <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                <div
+                  className={cn(
+                    'overflow-y-auto border border-slate-200 bg-white px-6 py-6',
+                    sectionSpacing,
+                    'rounded-xl shadow-sm'
+                  )}
+                >
+                  <div className={cn(cardStyles.surface, cardPadding, 'space-y-4')}>
+                    <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                      <span className="text-sm font-semibold text-gray-700">Edit Mode</span>
+                        <span className="h-2 w-2 rounded-full bg-violet-500" />
+                        <span className="text-sm font-semibold text-slate-700">Edit Mode</span>
                     </div>
                     <button
                       type="button"
                       onClick={() => setIsBulkEditMode(!isBulkEditMode)}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        className={cn(
+                          'rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors',
                         isBulkEditMode
-                          ? 'bg-purple-100 text-purple-700 border border-purple-200'
-                          : 'bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200'
-                      }`}
+                            ? 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                        )}
                     >
                       {isBulkEditMode ? 'Bulk Edit' : 'Single Day'}
                     </button>
                   </div>
 
-                  {/* Step 1: Task Type Selection */}
-                  <div className="space-y-2">
-                    <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                      <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                      Task Type
-                    </label>
-                    
-                    {/* Type Change Restriction Message */}
-                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3">
-                      <div className="flex items-start gap-2">
-                        <div className="w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                          <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                          </svg>
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+                      <div className="flex gap-3">
+                        <div className="mt-0.5 h-5 w-5 flex-shrink-0 rounded-full bg-amber-500 text-[11px] font-semibold text-white flex items-center justify-center">
+                          !
                         </div>
-                        <div>
-                          <p className="text-sm font-medium text-amber-800">
-                            Task Type Cannot Be Changed
-                          </p>
-                          <p className="text-xs text-amber-700 mt-1">
-                            To change from {originalTaskType === 'training' ? 'Training' : 'Non-Training'} to {originalTaskType === 'training' ? 'Non-Training' : 'Training'}, please delete this task and create a new one.
+                        <div className="space-y-1">
+                          <p className="font-semibold text-amber-800">Task type cannot be changed</p>
+                          <p>
+                            To switch from {originalTaskType === 'training' ? 'Training' : 'Non-Training'} to{' '}
+                            {originalTaskType === 'training' ? 'Non-Training' : 'Training'}, delete this task and create a
+                            new one.
                           </p>
                         </div>
                       </div>
                     </div>
                     
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className={`relative p-3 border-2 rounded-lg transition-all duration-200 ${
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label
+                        className={cn(
+                          'relative flex flex-col gap-2 rounded-xl border-2 p-3 transition shadow-sm',
                         editingForm.type === 'training' 
-                          ? 'border-blue-500 bg-blue-50' 
-                          : 'border-gray-200 bg-gray-50'
-                      } ${originalTaskType === 'training' ? 'cursor-default' : 'cursor-not-allowed opacity-50'}`}>
+                            ? 'border-sky-500 bg-sky-50'
+                            : 'border-slate-200 bg-slate-50',
+                          originalTaskType === 'training'
+                            ? 'cursor-default'
+                            : 'cursor-not-allowed opacity-60'
+                        )}
+                      >
                         <input 
                           type="radio" 
                           name="editType" 
@@ -3349,22 +4735,30 @@ const SchedulePage = () => {
                           className="sr-only" 
                         />
                         <div className="flex items-center gap-2">
-                          <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center ${
-                            editingForm.type === 'training' ? 'border-blue-500' : 'border-gray-300'
-                          }`}>
-                            {editingForm.type === 'training' && <div className="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>}
+                          <span
+                            className={cn(
+                              'flex h-5 w-5 items-center justify-center rounded-full border-2',
+                              editingForm.type === 'training' ? 'border-sky-500' : 'border-slate-300'
+                            )}
+                          >
+                            {editingForm.type === 'training' && <span className="h-2 w-2 rounded-full bg-sky-500" />}
+                          </span>
+                          <span className="text-sm font-semibold text-slate-900">Training</span>
                           </div>
-                          <div>
-                            <p className="font-medium text-gray-900 text-sm">Training</p>
-                            <p className="text-xs text-gray-500">Client-facing sessions</p>
-                          </div>
-                        </div>
+                        <p className="text-xs text-slate-500">Client-facing sessions</p>
                       </label>
-                      <label className={`relative p-3 border-2 rounded-lg transition-all duration-200 ${
+
+                      <label
+                        className={cn(
+                          'relative flex flex-col gap-2 rounded-xl border-2 p-3 transition shadow-sm',
                         editingForm.type === 'non-training' 
                           ? 'border-orange-500 bg-orange-50' 
-                          : 'border-gray-200 bg-gray-50'
-                      } ${originalTaskType === 'non-training' ? 'cursor-default' : 'cursor-not-allowed opacity-50'}`}>
+                            : 'border-slate-200 bg-slate-50',
+                          originalTaskType === 'non-training'
+                            ? 'cursor-default'
+                            : 'cursor-not-allowed opacity-60'
+                        )}
+                      >
                         <input 
                           type="radio" 
                           name="editType" 
@@ -3375,114 +4769,103 @@ const SchedulePage = () => {
                           className="sr-only" 
                         />
                         <div className="flex items-center gap-2">
-                          <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center ${
-                            editingForm.type === 'non-training' ? 'border-orange-500' : 'border-gray-300'
-                          }`}>
-                            {editingForm.type === 'non-training' && <div className="w-1.5 h-1.5 bg-orange-500 rounded-full"></div>}
+                          <span
+                            className={cn(
+                              'flex h-5 w-5 items-center justify-center rounded-full border-2',
+                              editingForm.type === 'non-training' ? 'border-orange-500' : 'border-slate-300'
+                            )}
+                          >
+                            {editingForm.type === 'non-training' && (
+                              <span className="h-2 w-2 rounded-full bg-orange-500" />
+                            )}
+                          </span>
+                          <span className="text-sm font-semibold text-slate-900">Non-Training</span>
                           </div>
-                          <div>
-                            <p className="font-medium text-gray-900 text-sm">Non-Training</p>
-                            <p className="text-xs text-gray-500">Internal tasks & meetings</p>
-                          </div>
-                        </div>
+                        <p className="text-xs text-slate-500">Internal tasks & meetings</p>
                       </label>
                     </div>
                   </div>
 
-                  {/* Step 2: Trainer Selection */}
+                  <div className={cn(cardStyles.surface, cardPadding, 'space-y-3')}>
                   <div className="space-y-1">
-                    <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                      <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                      <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                       Select Trainer
                     </label>
+                      <p className="text-xs text-slate-500">Only active trainers appear in this list.</p>
+                    </div>
                     <select 
                       name="trainer" 
                       value={editingForm.trainer || ''} 
-                      onChange={e => setEditingForm(f => ({ ...f, trainer: e.target.value }))} 
+                      onChange={(e) => setEditingForm((f) => ({ ...f, trainer: e.target.value }))}
                       required 
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                     >
                       <option value="">Choose a trainer...</option>
-                      {activeTrainers.map(t => (
-                        <option key={t.id} value={t.name}>{t.name}</option>
+                      {activeTrainers.map((t) => (
+                        <option key={t.id} value={t.name}>
+                          {t.name}
+                        </option>
                       ))}
                     </select>
                   </div>
 
-                  {/* Step 3: Date Selection */}
+                  <div className={cn(cardStyles.surface, cardPadding, 'space-y-4')}>
                   <div className="space-y-1">
-                    <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                      <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
+                      <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                       Date Range
                     </label>
-                    {isBulkEditMode ? (
-                      <div className="grid grid-cols-2 gap-3">
+                      <p className="text-xs text-slate-500">
+                        {isBulkEditMode ? 'Choose the window for this bulk update.' : 'Dates are locked for single-day edits.'}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div>
-                          <label className="text-xs text-gray-600 mb-1 block">Start Date</label>
+                        <label className="mb-1 block text-xs font-medium text-slate-500">Start Date</label>
                                                   <input 
                           type="date" 
-                          value={bulkEditDateRange.startDate} 
-                          onChange={e => {
-                            setBulkEditDateRange(prev => ({ ...prev, startDate: e.target.value }));
-                            // Also update the editingForm with the new date range
-                            setEditingForm(prev => ({ ...prev, startDate: e.target.value }));
+                          value={
+                            isBulkEditMode ? bulkEditDateRange.startDate : editingForm.startDate || ''
+                          }
+                          onChange={(e) => {
+                            if (isBulkEditMode) {
+                              setBulkEditDateRange((prev) => ({ ...prev, startDate: e.target.value }));
+                            }
+                            setEditingForm((prev) => ({ ...prev, startDate: e.target.value }));
                           }} 
                           required 
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm"
+                          readOnly={!isBulkEditMode}
+                          className={cn(
+                            'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100',
+                            !isBulkEditMode && 'bg-slate-50'
+                          )}
                         />
                         </div>
                         <div>
-                          <label className="text-xs text-gray-600 mb-1 block">End Date</label>
+                        <label className="mb-1 block text-xs font-medium text-slate-500">End Date</label>
                                                   <input 
                           type="date" 
-                          value={bulkEditDateRange.endDate} 
-                          onChange={e => {
-                            setBulkEditDateRange(prev => ({ ...prev, endDate: e.target.value }));
-                            // Also update the editingForm with the new date range
-                            setEditingForm(prev => ({ ...prev, endDate: e.target.value }));
+                          value={
+                            isBulkEditMode ? bulkEditDateRange.endDate : editingForm.endDate || ''
+                          }
+                          onChange={(e) => {
+                            if (isBulkEditMode) {
+                              setBulkEditDateRange((prev) => ({ ...prev, endDate: e.target.value }));
+                            }
+                            setEditingForm((prev) => ({ ...prev, endDate: e.target.value }));
                           }} 
                           required 
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm"
+                          readOnly={!isBulkEditMode}
+                          className={cn(
+                            'w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100',
+                            !isBulkEditMode && 'bg-slate-50'
+                          )}
                         />
                         </div>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="text-xs text-gray-600 mb-1 block">Start Date</label>
-                          <input 
-                            type="date" 
-                            value={editingForm.startDate || ''} 
-                            onChange={e => setEditingForm(f => ({ ...f, startDate: e.target.value }))} 
-                            required 
-                            className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm bg-gray-50"
-                            readOnly
-                          />
-                        </div>
-                        <div>
-                          <label className="text-xs text-gray-600 mb-1 block">End Date</label>
-                          <input 
-                            type="date" 
-                            value={editingForm.endDate || ''} 
-                            onChange={e => setEditingForm(f => ({ ...f, endDate: e.target.value }))} 
-                            required 
-                            className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm bg-gray-50"
-                            readOnly
-                          />
-                        </div>
-                      </div>
-                    )}
                   </div>
 
-                  {/* Step 3.5: Exclude Dates (Bulk Edit Only) */}
                   {isBulkEditMode && bulkEditDateRange.startDate && bulkEditDateRange.endDate && (
-                    <div className="space-y-2">
-                      <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                        <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                        Exclude Dates
-                      </label>
-                      <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                        {/* Generate dates in range */}
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                         {(() => {
                           const startDate = new Date(bulkEditDateRange.startDate);
                           const endDate = new Date(bulkEditDateRange.endDate);
@@ -3493,53 +4876,55 @@ const SchedulePage = () => {
                           }
                           
                           return (
-                            <div className="space-y-3">
+                            <div className="space-y-4">
                               <div className="flex items-center justify-between">
-                                <span className="text-sm text-gray-600">
-                                  Select dates to exclude from bulk update:
+                                <span className="text-sm text-slate-600">
+                                  Toggle dates to exclude from this bulk update.
                                 </span>
                                 {excludedDates.length > 0 && (
-                                  <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-full">
+                                  <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-700">
                                     {excludedDates.length} excluded
                                   </span>
                                 )}
                               </div>
                               
-                              <div className="grid grid-cols-7 gap-1">
-                                {/* Day headers */}
+                              <div className="grid grid-cols-7 gap-1 text-xs">
                                 {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => (
-                                  <div key={`day-header-${index}`} className="text-center text-xs font-medium text-gray-500 py-1">
+                                  <div
+                                    key={`day-header-${index}`}
+                                    className="py-1 text-center font-semibold text-slate-400"
+                                  >
                                     {day}
                                   </div>
                                 ))}
                                 
-                                {/* Date grid */}
                                 {(() => {
                                   const firstDay = new Date(startDate).getDay();
                                   const paddingDays = Array(firstDay).fill(null);
-                                  const dateDays = datesInRange.map(dateStr => {
+                                  const dateDays = datesInRange.map((dateStr) => {
                                     const date = new Date(dateStr);
                                     const isExcluded = excludedDates.includes(dateStr);
                                     return { dateStr, date, isExcluded };
                                   });
                                   
                                   return [...paddingDays, ...dateDays].map((item, index) => (
-                                    <div key={index} className="h-8 flex items-center justify-center">
+                                    <div key={index} className="flex h-8 items-center justify-center">
                                       {item && (
                                         <button
                                           type="button"
                                           onClick={() => {
                                             if (excludedDates.includes(item.dateStr)) {
-                                              setExcludedDates(prev => prev.filter(d => d !== item.dateStr));
+                                              setExcludedDates((prev) => prev.filter((d) => d !== item.dateStr));
                                             } else {
-                                              setExcludedDates(prev => [...prev, item.dateStr]);
+                                              setExcludedDates((prev) => [...prev, item.dateStr]);
                                             }
                                           }}
-                                          className={`w-6 h-6 rounded-full text-xs font-medium transition-all duration-200 ${
+                                          className={cn(
+                                            'flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold transition-colors',
                                             item.isExcluded
-                                              ? 'bg-red-500 text-white hover:bg-red-600'
-                                              : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-                                          }`}
+                                              ? 'border-rose-500 bg-rose-500 text-white hover:bg-rose-600'
+                                              : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-100'
+                                          )}
                                         >
                                           {item.date.getDate()}
                                         </button>
@@ -3549,15 +4934,14 @@ const SchedulePage = () => {
                                 })()}
                               </div>
                               
-                              {/* Excluded dates list */}
                               {excludedDates.length > 0 && (
-                                <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
-                                  <p className="text-xs font-medium text-red-700 mb-2">Excluded Dates:</p>
-                                  <div className="flex flex-wrap gap-1">
-                                    {excludedDates.map(dateStr => (
+                                <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                                  <p className="text-xs font-semibold text-rose-700">Excluded Dates</p>
+                                  <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {excludedDates.map((dateStr) => (
                                       <span
                                         key={dateStr}
-                                        className="inline-flex items-center gap-1 bg-red-100 text-red-700 px-2 py-1 rounded-full text-xs"
+                                        className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-white px-2 py-0.5 text-xs font-medium text-rose-700"
                                       >
                                         {new Date(dateStr).toLocaleDateString('en-US', {
                                           month: 'short',
@@ -3565,8 +4949,8 @@ const SchedulePage = () => {
                                         })}
                                         <button
                                           type="button"
-                                          onClick={() => setExcludedDates(prev => prev.filter(d => d !== dateStr))}
-                                          className="ml-1 hover:bg-red-200 rounded-full w-4 h-4 flex items-center justify-center"
+                                          onClick={() => setExcludedDates((prev) => prev.filter((d) => d !== dateStr))}
+                                          className="ml-1 flex h-4 w-4 items-center justify-center rounded-full hover:bg-rose-100"
                                         >
                                           ×
                                         </button>
@@ -3578,23 +4962,29 @@ const SchedulePage = () => {
                             </div>
                           );
                         })()}
-                      </div>
                     </div>
                   )}
+                  </div>
 
-                  {/* Step 4: Task Details */}
+                  <div className={cn(cardStyles.surface, cardPadding, 'space-y-4')}>
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        {editingForm.type === 'training' ? 'Training Details' : 'Task Details'}
+                      </label>
+                      <p className="text-xs text-slate-500">
+                        Update the key fields that trainers and program managers will see.
+                      </p>
+                    </div>
+
                   {editingForm.type === 'training' ? (
                     <>
                       <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
-                          Role
-                        </label>
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Role</span>
                         <select 
                           name="role" 
                           value={editingForm.role || ''} 
-                          onChange={e => setEditingForm(f => ({ ...f, role: e.target.value }))} 
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm"
+                            onChange={(e) => setEditingForm((f) => ({ ...f, role: e.target.value }))}
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                         >
                           <option value="">Select role...</option>
                           <option value="TA">TA</option>
@@ -3602,93 +4992,75 @@ const SchedulePage = () => {
                         </select>
                       </div>
                       <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                          Client
-                        </label>
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Client</span>
                         <input 
                           type="text" 
                           name="client" 
                           value={editingForm.client || ''} 
-                          onChange={e => setEditingForm(f => ({ ...f, client: e.target.value }))} 
+                            onChange={(e) => setEditingForm((f) => ({ ...f, client: e.target.value }))}
                           required 
                           placeholder="Enter client name..."
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm"
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                          Course
-                        </label>
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Course</span>
                         <input 
                           type="text" 
                           name="course" 
                           value={editingForm.course || ''} 
-                          onChange={e => setEditingForm(f => ({ ...f, course: e.target.value }))} 
+                            onChange={(e) => setEditingForm((f) => ({ ...f, course: e.target.value }))}
                           required 
                           placeholder="Enter course name..."
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm"
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
-                          Description
-                        </label>
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Description</span>
                         <textarea 
                           name="description" 
                           value={editingForm.description || ''} 
-                          onChange={e => setEditingForm(f => ({ ...f, description: e.target.value }))} 
+                            onChange={(e) => setEditingForm((f) => ({ ...f, description: e.target.value }))}
                           required 
-                          placeholder="Enter session description..."
+                            placeholder="Add context for this session..."
                           rows={3}
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm resize-none"
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                         />
                       </div>
                     </>
                   ) : (
                     <>
                       <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-orange-500 rounded-full"></div>
-                          Task Details
-                        </label>
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Task</span>
                         <input 
                           type="text" 
                           name="taskDetails" 
                           value={editingForm.taskDetails || ''} 
-                          onChange={e => setEditingForm(f => ({ ...f, taskDetails: e.target.value }))} 
+                            onChange={(e) => setEditingForm((f) => ({ ...f, taskDetails: e.target.value }))}
                           required 
                           placeholder="Enter task details..."
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm"
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                          Description
-                        </label>
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Description</span>
                         <textarea 
                           name="description" 
                           value={editingForm.description || ''} 
-                          onChange={e => setEditingForm(f => ({ ...f, description: e.target.value }))} 
+                            onChange={(e) => setEditingForm((f) => ({ ...f, description: e.target.value }))}
                           required 
-                          placeholder="Enter task description..."
+                            placeholder="Describe what needs to be done..."
                           rows={3}
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm resize-none"
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                          <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                          Task Type
-                        </label>
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Task Type</span>
                         <select 
                           name="taskType" 
                           value={editingForm.taskType || ''} 
-                          onChange={e => setEditingForm(f => ({ ...f, taskType: e.target.value }))} 
-                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm"
+                            onChange={(e) => setEditingForm((f) => ({ ...f, taskType: e.target.value }))}
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                         >
                           <option value="">Select task type...</option>
                           <option value="Question creation">Question creation</option>
@@ -3699,85 +5071,93 @@ const SchedulePage = () => {
                       </div>
                     </>
                   )}
+                  </div>
                 </div>
 
                 {/* Right Side: Preview & Actions */}
-                <div className="w-1/2 p-4 bg-gray-50 border-l border-gray-200 flex flex-col">
-                  {/* Preview Section */}
-                  <div className="flex-1">
-                    <h4 className="text-lg font-semibold text-gray-900 mb-4">Preview</h4>
-                    <div className="bg-white rounded-lg p-4 space-y-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-gray-600">Type:</span>
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                          editingForm.type === 'training' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
-                        }`}>
+                <div
+                  className={cn(
+                    'overflow-y-auto border border-slate-200 bg-slate-50 px-6 py-6',
+                    'rounded-xl shadow-sm flex flex-col gap-4'
+                  )}
+                >
+                  <div className={cn(cardStyles.surface, cardPadding, 'space-y-3')}>
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-600">Task Preview</h4>
+                      <span
+                        className={cn(
+                          getChipClasses(editingForm.type === 'training' ? 'info' : 'warning'),
+                          'px-2 py-0.5 text-[11px] uppercase'
+                        )}
+                      >
                           {editingForm.type === 'training' ? 'Training' : 'Non-Training'}
                         </span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-gray-600">Trainer:</span>
-                        <span className="text-sm text-gray-900">{editingForm.trainer || 'Not selected'}</span>
+                    <div className="space-y-3 text-sm">
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-slate-500">Trainer</span>
+                        <span className="font-medium text-slate-900">{editingForm.trainer || 'Not selected'}</span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-gray-600">Date:</span>
-                        <span className="text-sm text-gray-900">
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-slate-500">Date</span>
+                        <span className="font-medium text-slate-900">
                           {isBulkEditMode 
-                            ? `${bulkEditDateRange.startDate} to ${bulkEditDateRange.endDate}`
-                            : editingForm.startDate
-                          }
+                            ? `${bulkEditDateRange.startDate || '—'} to ${bulkEditDateRange.endDate || '—'}`
+                            : editingForm.startDate || '—'}
                         </span>
                       </div>
                       {isBulkEditMode && excludedDates.length > 0 && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-gray-600">Excluded:</span>
-                          <span className="text-sm text-red-600">
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-slate-500">Excluded</span>
+                          <span className="font-medium text-rose-600">
                             {excludedDates.length} date{excludedDates.length !== 1 ? 's' : ''}
                           </span>
                         </div>
                       )}
-                      {editingForm.type === 'training' && (
+                      {editingForm.type === 'training' ? (
                         <>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-600">Role:</span>
-                            <span className="text-sm text-gray-900">{editingForm.role || 'Not selected'}</span>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-slate-500">Role</span>
+                            <span className="font-medium text-slate-900">{editingForm.role || 'Not selected'}</span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-600">Client:</span>
-                            <span className="text-sm text-gray-900">{editingForm.client || 'Not specified'}</span>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-slate-500">Client</span>
+                            <span className="font-medium text-slate-900">{editingForm.client || 'Not specified'}</span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-600">Course:</span>
-                            <span className="text-sm text-gray-900">{editingForm.course || 'Not specified'}</span>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-slate-500">Course</span>
+                            <span className="font-medium text-slate-900">{editingForm.course || 'Not specified'}</span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-600">Description:</span>
-                            <span className="text-sm text-gray-900">{editingForm.description || 'Not specified'}</span>
+                          <div className="flex items-start justify-between gap-4">
+                            <span className="text-slate-500">Description</span>
+                            <span className="max-w-[60ch] text-right text-slate-900">
+                              {editingForm.description || 'Not specified'}
+                            </span>
                           </div>
                         </>
-                      )}
-                      {editingForm.type === 'non-training' && (
+                      ) : (
                         <>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-600">Task:</span>
-                            <span className="text-sm text-gray-900">{editingForm.taskDetails || 'Not specified'}</span>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-slate-500">Task</span>
+                            <span className="font-medium text-slate-900">{editingForm.taskDetails || 'Not specified'}</span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-600">Type:</span>
-                            <span className="text-sm text-gray-900">{editingForm.taskType || 'Not selected'}</span>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-slate-500">Type</span>
+                            <span className="font-medium text-slate-900">{editingForm.taskType || 'Not selected'}</span>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-600">Description:</span>
-                            <span className="text-sm text-gray-900">{editingForm.description || 'Not specified'}</span>
+                          <div className="flex items-start justify-between gap-4">
+                            <span className="text-slate-500">Description</span>
+                            <span className="max-w-[60ch] text-right text-slate-900">
+                              {editingForm.description || 'Not specified'}
+                            </span>
                           </div>
                         </>
                       )}
                     </div>
                   </div>
 
-                  {/* Email Notification Option */}
-                  <div className="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                    <div className="flex items-center space-x-2">
+                  <div className={cn(cardStyles.surface, cardPadding, 'space-y-3')}>
+                    <div className="flex items-start gap-3">
                       <Checkbox
                         id="send-email-update"
                         checked={sendEmailOnUpdate}
@@ -3785,37 +5165,38 @@ const SchedulePage = () => {
                       />
                       <label
                         htmlFor="send-email-update"
-                        className="text-sm font-medium text-gray-700 cursor-pointer flex items-center gap-2"
+                        className="text-sm font-medium text-slate-700 flex items-start gap-2"
                       >
-                        <Mail className="h-4 w-4 text-gray-500" />
-                        Send email notification to trainer
+                        <Mail className="mt-0.5 h-4 w-4 text-slate-500" />
+                        <span>Send email notification to trainer</span>
                       </label>
                     </div>
+                    <p className="text-xs text-slate-500">
+                      Trainers receive an updated summary of the assignment details.
+                    </p>
                   </div>
 
-                  {/* Action Buttons */}
-                  <div className="flex gap-3 pt-4 border-t border-gray-200">
+                  <div className={cn(cardStyles.surface, cardPadding)}>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
                     <Button 
                       type="button" 
                       variant="outline" 
                       onClick={cancelEditTask}
-                      className="flex-1"
+                        className="w-full sm:w-auto"
                     >
                       Cancel
                     </Button>
-                    <Button 
-                      type="submit"
-                      className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
-                    >
+                      <Button type="submit" className="w-full sm:w-auto">
                       {isBulkEditMode ? 'Update All Days' : 'Save Changes'}
                     </Button>
+                    </div>
                   </div>
                 </div>
               </form>
-            </div>
+            </motion.div>
           </motion.div>
-        )}
       </AnimatePresence>
+      , document.body)}
 
       {/* Add the export modal */}
       {isExportModalOpen && renderExportModal()}
@@ -3825,7 +5206,7 @@ const SchedulePage = () => {
 
       {/* Enhanced Matrix Filter Modal */}
       {isMatrixFilterModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto relative">
             {/* Header */}
             <div className="flex justify-between items-center mb-6 pb-4 border-b border-gray-200">

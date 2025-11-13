@@ -1,0 +1,17 @@
+{
+  "name": "trainer-scheduler-functions",
+  "description": "Firebase Cloud Functions for Trainer Scheduler",
+  "main": "index.js",
+  "engines": {
+    "node": "18"
+  },
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-admin": "^11.11.1",
+    "firebase-functions": "^4.6.1",
+    "nodemailer": "^6.9.13"
+  }
+}

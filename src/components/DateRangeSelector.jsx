@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Calendar } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Calendar, X as CloseIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 // Helper to parse YYYY-MM-DD as local date
@@ -15,6 +15,7 @@ const DateRangeSelector = ({ onDateRangeChange, initialStartDate, initialEndDate
   const [excludedDates, setExcludedDates] = useState(new Set());
   const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
   const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
+  const calendarAnchorRef = useRef(null);
 
   // Generate array of dates between start and end date
   const getDatesInRange = (start, end) => {
@@ -73,6 +74,17 @@ const DateRangeSelector = ({ onDateRangeChange, initialStartDate, initialEndDate
     });
   };
 
+  useEffect(() => {
+    if (!showCalendar) return;
+    const handleClickOutside = (event) => {
+      if (calendarAnchorRef.current && !calendarAnchorRef.current.contains(event.target)) {
+        setShowCalendar(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showCalendar]);
+
   // Render calendar
   const renderCalendar = () => {
     const totalDays = daysInMonth(currentYear, currentMonth);
@@ -82,7 +94,7 @@ const DateRangeSelector = ({ onDateRangeChange, initialStartDate, initialEndDate
     const allCells = [...blanks, ...daysArray];
 
     return (
-      <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-3 w-[260px]">
+      <div className="bg-white rounded-xl shadow-xl border border-gray-200 p-3 w-[280px]">
         <div className="flex justify-between items-center mb-3">
           <button
             type="button"
@@ -189,52 +201,69 @@ const DateRangeSelector = ({ onDateRangeChange, initialStartDate, initialEndDate
       </div>
       
       {startDate && endDate && (
-        <div className="flex gap-3">
-          {/* Left side: Button and excluded dates */}
-          <div className="flex-1 space-y-2">
+        <div className="space-y-3">
+          <div className="relative" ref={calendarAnchorRef}>
           <Button
             type="button"
             variant="outline"
-            onClick={() => setShowCalendar(!showCalendar)}
-              className="w-full justify-start px-3 py-1.5 border border-gray-200 hover:border-gray-300 hover:bg-gray-50 transition-all duration-200 text-sm"
+              onClick={() => setShowCalendar((prev) => !prev)}
+              className="w-full justify-start gap-2 px-3 py-2 border border-gray-200 text-sm hover:border-blue-300 hover:bg-blue-50/40 transition-all"
           >
-              <Calendar className="mr-2 h-3 w-3 text-gray-500" />
-              <span className="text-sm text-gray-700">Select Dates to Exclude</span>
+              <Calendar className="h-4 w-4 text-blue-500" />
+              <span className="text-sm text-gray-700">Select dates to exclude</span>
               {excludedDates.size > 0 && (
-                <span className="ml-auto bg-blue-100 text-blue-800 text-xs px-1.5 py-0.5 rounded-full">
+                <span className="ml-auto rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">
                   {excludedDates.size} excluded
                 </span>
               )}
           </Button>
+            {showCalendar && (
+              <div className="absolute left-0 top-full z-50 mt-2">
+                {renderCalendar()}
+                <div className="flex items-center justify-between rounded-b-xl border border-t-0 border-gray-200 bg-white px-3 py-2 text-xs">
+                  <button
+                    type="button"
+                    className="text-blue-600 hover:text-blue-700 font-medium"
+                    onClick={() => setExcludedDates(new Set())}
+                  >
+                    Clear excluded
+                  </button>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 text-gray-500 hover:text-gray-700"
+                    onClick={() => setShowCalendar(false)}
+                  >
+                    <CloseIcon className="h-3 w-3" />
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
 
       {excludedDates.size > 0 && (
-              <div className="space-y-1">
-                <p className="text-xs font-medium text-gray-700">Excluded Dates:</p>
-                <div className="flex flex-wrap gap-1">
-            {Array.from(excludedDates).map(date => (
+            <div className="space-y-1.5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-600">Excluded dates</p>
+              <div className="flex flex-wrap gap-1.5">
+                {Array.from(excludedDates).map((date) => (
               <span
                 key={date}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-200"
+                    className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600 shadow-sm"
               >
-                {(() => { const d = parseLocalDate(date); return d.toLocaleDateString(); })()}
+                    {(() => {
+                      const d = parseLocalDate(date);
+                      return d.toLocaleDateString();
+                    })()}
                 <button
                         type="button"
                   onClick={() => toggleDateExclusion(parseLocalDate(date))}
-                        className="ml-1 text-red-500 hover:text-red-700 transition-colors"
+                      className="text-red-500 hover:text-red-700"
                 >
                   ×
                 </button>
               </span>
             ))}
           </div>
-              </div>
-            )}
-          </div>
-          
-          {/* Right side: Calendar */}
-          {showCalendar && (
-            <div className="flex-shrink-0">
-              {renderCalendar()}
             </div>
           )}
         </div>

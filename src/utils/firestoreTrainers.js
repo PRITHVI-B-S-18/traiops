@@ -13,4 +13,12 @@ export async function loadTrainerData() {
     return docSnap.data().trainerData;
   }
   return [];
-} 
+}
+
+export async function getTrainerByEmail(email) {
+  if (!email || typeof email !== 'string') return null;
+  const trainers = await loadTrainerData();
+  if (!Array.isArray(trainers)) return null;
+  const normalizedEmail = email.trim().toLowerCase();
+  return trainers.find(trainer => (trainer.email || '').trim().toLowerCase() === normalizedEmail) || null;
+}

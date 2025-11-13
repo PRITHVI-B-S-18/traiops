@@ -65,7 +65,7 @@ const SessionWarning = () => {
                   <Button
                     onClick={handleExtend}
                     size="sm"
-                    className="bg-[#5A5A5A] hover:bg-[#4A4A4A] text-white shadow-md hover:shadow-lg transition-all duration-200 font-medium"
+                    className="bg-primary hover:bg-primary/90 text-primary-foreground shadow-md hover:shadow-lg transition-all duration-200 font-medium"
                   >
                     <RefreshCw className="h-4 w-4 mr-2" />
                     Stay Logged In
@@ -75,10 +75,10 @@ const SessionWarning = () => {
                   onClick={handleDismiss}
                   whileHover={{ scale: 1.1, rotate: 90 }}
                   whileTap={{ scale: 0.9 }}
-                  className="p-1.5 rounded-lg hover:bg-[#E8E8E8] transition-colors focus:outline-none focus:ring-2 focus:ring-[#D0D0D0]"
+                  className="p-1.5 rounded-lg hover:bg-secondary transition-colors focus:outline-none focus:ring-2 focus:ring-border"
                   aria-label="Dismiss warning"
                 >
-                  <X className="h-4 w-4 text-[#5A5A5A]" />
+                  <X className="h-4 w-4 text-primary" />
                 </motion.button>
               </div>
             </div>
