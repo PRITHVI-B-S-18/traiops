@@ -10,6 +10,12 @@ import { formatDateForDisplay, formatTimestamp } from './timezoneUtils';
 // API endpoint configuration
 const EMAIL_API_URL = import.meta.env.VITE_EMAIL_API_URL;
 
+// Default URLs for emails
+const DEFAULT_LOGIN_URL = buildAppUrl('login');
+const DEFAULT_PM_REQUESTS_URL = buildAppUrl('program-manager/requests');
+const DEFAULT_TRAINER_CLOCK_URL = buildAppUrl('trainer/clock-in');
+const DEFAULT_ADMIN_CLOCK_REQUESTS_URL = buildAppUrl('admin/clock-requests');
+
 /**
  * Send email via custom API endpoint
  * @param {string} toAddress - Recipient email address
@@ -138,7 +144,7 @@ const templates = {
                 <p style="margin:4px 0 0;font-size:13px;"><strong>Temporary Password:</strong> <span style="font-weight:600;">${tempPassword}</span></p>
               </div>
               <div style="text-align:center;margin:20px 0;">
-                <a href="${loginUrl || 'http://localhost:5173/login'}" style="display:inline-block;padding:10px 24px;background:#1f2937;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;font-size:13px;">
+                <a href="${loginUrl || DEFAULT_LOGIN_URL}" style="display:inline-block;padding:10px 24px;background:#1f2937;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;font-size:13px;">
                   Log In →
                 </a>
               </div>`
@@ -552,7 +558,7 @@ const templates = {
 
                 <!-- CTA Button -->
                 <div style="margin:20px 0;text-align:center;">
-                  <a href="${approvalUrl || 'http://localhost:5173/program-manager/requests'}"
+                  <a href="${approvalUrl || DEFAULT_PM_REQUESTS_URL}"
                      style="display:inline-block;padding:10px 26px;background:#1E3A8A;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;font-size:13px;">
                     ${buttonLabel} →
                   </a>
@@ -958,7 +964,7 @@ const templates = {
                 </p>
 
                 <div style="margin:20px 0; text-align:center;">
-                  <a href="${resubmitUrl || 'http://localhost:5173/trainer/clock-in'}"
+                  <a href="${resubmitUrl || DEFAULT_TRAINER_CLOCK_URL}"
                      style="display:inline-block; padding:10px 26px; background:#1E3A8A; color:#ffffff;
                             text-decoration:none; border-radius:6px; font-weight:600; font-size:13px;">
                     Submit New Request →
@@ -1062,7 +1068,7 @@ const templates = {
 
                 <!-- CTA Button -->
                 <div style="margin:20px 0; text-align:center;">
-                  <a href="${reviewUrl || 'http://localhost:5173/admin/clock-requests'}"
+                  <a href="${reviewUrl || DEFAULT_ADMIN_CLOCK_REQUESTS_URL}"
                      style="display:inline-block; padding:9px 22px; background:#1F2937; color:#ffffff;
                             text-decoration:none; border-radius:6px; font-weight:600; font-size:13px;">
                     Review Expired Request →
@@ -1245,7 +1251,7 @@ const templates = {
 
                 <!-- CTA Button -->
                 <div style="margin:20px 0; text-align:center;">
-                  <a href="${reviewUrl || 'http://localhost:5173/program-manager/requests'}"
+                  <a href="${reviewUrl || DEFAULT_PM_REQUESTS_URL}"
                      style="display:inline-block; padding:10px 26px; background:#0E7490; color:#ffffff;
                             text-decoration:none; border-radius:6px; font-weight:600; font-size:13px;">
                     Review Now →

@@ -12,10 +12,11 @@ import UserManagementPage from './pages/admin/UserManagementPage';
 import ClockRequestsPage from './pages/admin/ClockRequestsPage';
 import ClientManagementPage from './pages/admin/ClientManagementPage';
 import TrainerDashboardLayout from './pages/trainer/TrainerDashboardLayout';
+import TrainerHomePage from './pages/trainer/TrainerHomePage';
 import TrainerSchedulePage from './pages/trainer/TrainerSchedulePage';
 import ClockHistoryPage from './pages/trainer/ClockHistoryPage';
 import ProgramManagerDashboardLayout from './pages/program-manager/ProgramManagerDashboardLayout';
-import ProgramManagerDashboard from './pages/program-manager/ProgramManagerDashboard';
+import ProgramManagerHomePage from './pages/program-manager/ProgramManagerHomePage';
 import MyTrainersPage from './pages/program-manager/MyTrainersPage';
 import RequestApprovalsPage from './pages/program-manager/RequestApprovalsPage';
 import RequestHistoryPage from './pages/program-manager/RequestHistoryPage';
@@ -56,11 +57,11 @@ function AppContent() {
           element={<ProtectedRoute allowedRoles={['program_manager']} />}
         >
           <Route element={<ProgramManagerDashboardLayout />}>
-            <Route path="dashboard" element={<ProgramManagerDashboard />} />
+            <Route path="home" element={<ProgramManagerHomePage />} />
             <Route path="trainers" element={<MyTrainersPage />} />
             <Route path="requests" element={<RequestApprovalsPage />} />
             <Route path="history" element={<RequestHistoryPage />} />
-            <Route index element={<Navigate to="dashboard" replace />} />
+            <Route index element={<Navigate to="home" replace />} />
           </Route>
         </Route>
 
@@ -70,9 +71,10 @@ function AppContent() {
           element={<ProtectedRoute allowedRoles={['trainer']} />}
         >
           <Route element={<TrainerDashboardLayout />}>
+            <Route path="home" element={<TrainerHomePage />} />
             <Route path="schedule" element={<TrainerSchedulePage />} />
             <Route path="history" element={<ClockHistoryPage />} />
-            <Route index element={<Navigate to="schedule" replace />} />
+            <Route index element={<Navigate to="home" replace />} />
           </Route>
         </Route>
         

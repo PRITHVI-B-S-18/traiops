@@ -42,8 +42,8 @@ const LoginPage = () => {
       // Determine redirect based on user role
       const redirectPath = 
         user.role === 'admin' ? '/admin/schedule' :
-        user.role === 'program_manager' ? '/program-manager/dashboard' :
-        '/trainer/schedule';
+        user.role === 'program_manager' ? '/program-manager/home' :
+        '/trainer/home';
       navigate(redirectPath, { replace: true });
     }
   }, [user, authLoading, navigate]);
@@ -283,7 +283,7 @@ const LoginPage = () => {
                     description: `Welcome, ${email.split('@')[0]}!`,
                   });
                   setTimeout(() => {
-                    navigate('/trainer/schedule', { replace: true });
+                    navigate('/trainer/home', { replace: true });
                   }, 800);
                 } catch (loginErr) {
                   console.error('Auto-login error:', loginErr);

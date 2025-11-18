@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { motion } from 'framer-motion';
 import { History, Clock, MapPin, Calendar, CheckCircle, XCircle, AlertCircle, Filter, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { useLocation as useLocationHook } from '@/hooks/useLocation';
@@ -274,73 +275,7 @@ const ClockHistoryPage = () => {
       setCommandState({
         title: 'Clock History',
         description: 'View your attendance records and requests.',
-        actions: (
-          <div className="flex items-center gap-2">
-            {/* Location Status Icon */}
-            {!checkingLocation && (
-              <div
-                className="flex items-center justify-center h-9 w-9 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
-                title={locationGranted ? 'Location Enabled' : 'Location Required'}
-              >
-                <MapPin
-                  className={cn(
-                    'h-4 w-4',
-                    locationGranted ? 'text-emerald-600' : 'text-slate-500'
-                  )}
-                  aria-hidden="true"
-                />
-              </div>
-            )}
-            {/* Filter Button */}
-            <div className="relative">
-              <Button
-                onClick={() => setShowFilterMenu(!showFilterMenu)}
-                variant="outline"
-                size="sm"
-                className="flex items-center gap-2 whitespace-nowrap"
-              >
-                <Filter className="h-4 w-4" />
-                Filter: {filter.charAt(0).toUpperCase() + filter.slice(1)}
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-
-              {showFilterMenu && (
-                <>
-                  <div
-                    className="fixed inset-0 z-10"
-                    onClick={() => setShowFilterMenu(false)}
-                  />
-                  <div className="absolute right-0 mt-2 w-48 bg-white border border-slate-200 rounded-lg shadow-lg z-20">
-                    <button
-                      onClick={() => { setFilter('all'); setShowFilterMenu(false); }}
-                      className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${filter === 'all' ? 'bg-slate-50 font-medium' : ''}`}
-                    >
-                      All Records
-                    </button>
-                    <button
-                      onClick={() => { setFilter('approved'); setShowFilterMenu(false); }}
-                      className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${filter === 'approved' ? 'bg-slate-50 font-medium' : ''}`}
-                    >
-                      Approved
-                    </button>
-                    <button
-                      onClick={() => { setFilter('pending'); setShowFilterMenu(false); }}
-                      className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${filter === 'pending' ? 'bg-slate-50 font-medium' : ''}`}
-                    >
-                      Pending
-                    </button>
-                    <button
-                      onClick={() => { setFilter('rejected'); setShowFilterMenu(false); }}
-                      className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${filter === 'rejected' ? 'bg-slate-50 font-medium' : ''}`}
-                    >
-                      Rejected
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        ),
+        actions: null,
         metrics: !loading ? [
           <div key="total" className={cn(cardStyles.surface, cardPadding)}>
             <div className="flex items-center justify-between">
@@ -435,14 +370,69 @@ const ClockHistoryPage = () => {
       {/* Filter button moved to header */}
 
       {/* Records Card */}
-      <div className="bg-white rounded-lg shadow-sm border border-[#E0E0E0] overflow-hidden">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="bg-white rounded-lg shadow-sm border border-[#E0E0E0] overflow-hidden"
+      >
         {/* Card Header */}
         <div className="bg-gradient-to-r from-[#5A5A5A] to-[#3D3D3D] p-4 md:p-6">
-          <div className="flex items-center gap-3">
-            <History className="w-6 h-6 text-white" />
-            <div>
-              <h3 className="text-xl md:text-2xl font-bold text-white">Clock Records</h3>
-              <p className="text-sm text-white/80 mt-1">{filteredRecords.length} records found</p>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <History className="w-6 h-6 text-white" />
+              <div>
+                <h3 className="text-xl md:text-2xl font-bold text-white">Clock Records</h3>
+                <p className="text-sm text-white/80 mt-1">{filteredRecords.length} records found</p>
+              </div>
+            </div>
+            {/* Filter Button */}
+            <div className="relative">
+              <Button
+                onClick={() => setShowFilterMenu(!showFilterMenu)}
+                variant="outline"
+                size="sm"
+                className="flex items-center gap-2 whitespace-nowrap bg-white/10 border-white/20 text-white hover:bg-white/20"
+              >
+                <Filter className="h-4 w-4" />
+                Filter: {filter.charAt(0).toUpperCase() + filter.slice(1)}
+                <ChevronDown className="h-4 w-4" />
+              </Button>
+
+              {showFilterMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setShowFilterMenu(false)}
+                  />
+                  <div className="absolute right-0 mt-2 w-48 bg-white border border-slate-200 rounded-lg shadow-lg z-20">
+                    <button
+                      onClick={() => { setFilter('all'); setShowFilterMenu(false); }}
+                      className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${filter === 'all' ? 'bg-slate-50 font-medium' : ''}`}
+                    >
+                      All Records
+                    </button>
+                    <button
+                      onClick={() => { setFilter('approved'); setShowFilterMenu(false); }}
+                      className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${filter === 'approved' ? 'bg-slate-50 font-medium' : ''}`}
+                    >
+                      Approved
+                    </button>
+                    <button
+                      onClick={() => { setFilter('pending'); setShowFilterMenu(false); }}
+                      className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${filter === 'pending' ? 'bg-slate-50 font-medium' : ''}`}
+                    >
+                      Pending
+                    </button>
+                    <button
+                      onClick={() => { setFilter('rejected'); setShowFilterMenu(false); }}
+                      className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${filter === 'rejected' ? 'bg-slate-50 font-medium' : ''}`}
+                    >
+                      Rejected
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -644,7 +634,7 @@ const ClockHistoryPage = () => {
             </div>
           )}
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 };

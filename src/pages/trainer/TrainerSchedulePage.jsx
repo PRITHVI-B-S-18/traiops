@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import { useAuth } from '@/hooks/useAuth';
 import { useLocation as useLocationHook } from '@/hooks/useLocation';
 import { useOutletContext } from 'react-router-dom';
@@ -12,7 +13,6 @@ import { subscribeToScheduleUpdates } from '@/utils/firestoreSchedule';
 import {
   Calendar,
   Clock,
-  MapPin,
   AlertCircle,
   TrendingUp,
   CalendarDays,
@@ -60,7 +60,7 @@ const TrainerSchedulePage = () => {
   // Use refs to store latest data so subscription callbacks can access current values
   const latestSchedulesRef = useRef({});
   const trainerNameRef = useRef('');
-  const processSchedulesRef = useRef(() => {});
+  const processSchedulesRef = useRef(null);
 
   // Check onboarding status and get trainer name
   useEffect(() => {
@@ -207,17 +207,13 @@ const TrainerSchedulePage = () => {
     };
   }, [user?.uid, user?.email]); // Use specific properties instead of whole user object
 
-  // Function to process schedules for the current trainer
-  const processSchedules = (allSchedules, currentTrainerName) => {
+  // Function to process schedules for the current trainer - optimized to prevent unnecessary updates
+  const processSchedules = useCallback((allSchedules, currentTrainerName) => {
     if (!currentTrainerName) return;
 
     try {
-      console.log('📅 Processing schedules for trainer:', currentTrainerName);
-      
       // Filter schedules for this trainer
       const trainerSchedules = filterTrainerSchedules(allSchedules || {}, currentTrainerName);
-      
-      console.log('📅 Filtered schedules:', Object.keys(trainerSchedules).length, 'days with tasks');
       
       // Calculate stats from filtered schedules
       const trainerStats = calculateTrainerStats(trainerSchedules);
@@ -227,68 +223,69 @@ const TrainerSchedulePage = () => {
         acc[date] = [...trainerSchedules[date]]; // Create new array reference
         return acc;
       }, {});
-      setSchedules(newSchedules);
-      setStats(trainerStats);
+      
+      // Only update if data actually changed
+      setSchedules(prev => {
+        const prevKeys = Object.keys(prev).sort().join(',');
+        const newKeys = Object.keys(newSchedules).sort().join(',');
+        if (prevKeys === newKeys) {
+          // Check if content changed
+          let hasChanges = false;
+          for (const date in newSchedules) {
+            if (prev[date]?.length !== newSchedules[date]?.length) {
+              hasChanges = true;
+              break;
+            }
+          }
+          if (!hasChanges) return prev;
+        }
+        return newSchedules;
+      });
+      
+      setStats(prev => {
+        if (prev && 
+            prev.totalDays === trainerStats.totalDays &&
+            prev.totalTasks === trainerStats.totalTasks &&
+            prev.todayTasks === trainerStats.todayTasks &&
+            prev.upcomingTasks === trainerStats.upcomingTasks) {
+          return prev;
+        }
+        return trainerStats;
+      });
     } catch (error) {
       console.error('Error processing schedules:', error);
     }
-  };
+  }, []);
+  
+  // Store the function in ref for subscription callback
+  useEffect(() => {
+    processSchedulesRef.current = processSchedules;
+  }, [processSchedules]);
 
   // Set page title immediately on mount
   useEffect(() => {
     if (setCommandState) {
       setCommandState({
-        title: 'My Schedule',
-        description: 'View your assigned tasks and manage attendance.',
-        actions: !checkingPermission && (
-          <div
-            className="flex items-center justify-center h-9 w-9 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition-colors"
-            title={locationGranted ? 'Location Enabled' : 'Location Required'}
-          >
-            <MapPin
-              className={cn(
-                'h-4 w-4',
-                locationGranted ? 'text-emerald-600' : 'text-slate-500'
-              )}
-              aria-hidden="true"
-            />
-          </div>
-        ),
+        title: 'Overall Schedules',
+        description: 'View your complete schedule and manage your tasks',
+        actions: null,
         metrics: stats ? [
-          <div key="days" className={cn(cardStyles.surface, cardPadding)}>
+          <div key="tasks" className={cn(cardStyles.surface, 'p-3 sm:p-4')}>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-slate-500">Total Days</p>
-                <p className="text-2xl font-bold text-slate-900 mt-1">{stats.totalDays}</p>
+                <p className="text-[11px] sm:text-xs text-slate-500">Total Task Days</p>
+                <p className="text-xl sm:text-2xl font-bold text-slate-900 mt-0.5">{stats.totalTasks}</p>
               </div>
-              <CalendarDays className="h-8 w-8 text-blue-600" />
+              <CheckCircle2 className="h-6 w-6 sm:h-8 sm:w-8 text-emerald-600" />
             </div>
           </div>,
-          <div key="tasks" className={cn(cardStyles.surface, cardPadding)}>
+          <div key="upcoming" className={cn(cardStyles.surface, 'p-3 sm:p-4')}>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-slate-500">Total Tasks</p>
-                <p className="text-2xl font-bold text-slate-900 mt-1">{stats.totalTasks}</p>
+                <p className="text-[11px] sm:text-xs text-slate-500">Upcoming</p>
+                <p className="text-xl sm:text-2xl font-bold text-slate-900 mt-0.5">{stats.upcomingTasks}</p>
               </div>
-              <CheckCircle2 className="h-8 w-8 text-emerald-600" />
-            </div>
-          </div>,
-          <div key="today" className={cn(cardStyles.surface, cardPadding)}>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-slate-500">Today's Tasks</p>
-                <p className="text-2xl font-bold text-slate-900 mt-1">{stats.todayTasks}</p>
-              </div>
-              <Clock className="h-8 w-8 text-violet-600" />
-            </div>
-          </div>,
-          <div key="upcoming" className={cn(cardStyles.surface, cardPadding)}>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-slate-500">Upcoming Tasks</p>
-                <p className="text-2xl font-bold text-slate-900 mt-1">{stats.upcomingTasks}</p>
-              </div>
-              <TrendingUp className="h-8 w-8 text-orange-600" />
+              <TrendingUp className="h-6 w-6 sm:h-8 sm:w-8 text-orange-600" />
             </div>
           </div>,
         ] : null,
@@ -306,31 +303,40 @@ const TrainerSchedulePage = () => {
     trainerNameRef.current = trainerName;
   }, [trainerName]);
 
-  // Store the processing function in ref so subscription can access latest version
-  processSchedulesRef.current = processSchedules;
-
-  // Real-time schedule subscription - start immediately, filter when trainer name is available
+  // Real-time schedule subscription - optimized for performance
   useEffect(() => {
     if (!user?.uid) return;
 
     let isMounted = true;
     let initialLoad = true;
+    let lastProcessedData = null;
 
     // Start subscription immediately - don't wait for trainerName
-    // This ensures we get the data as soon as Firestore is ready
     const unsubscribe = subscribeToScheduleUpdates((allSchedules) => {
       if (!isMounted) return;
 
       try {
-        // Always store the latest schedules in ref
-        latestSchedulesRef.current = allSchedules || {};
+        const schedules = allSchedules || {};
         
-        // Get current trainer name from ref (always has latest value)
+        // Skip if data hasn't changed (shallow comparison)
+        if (lastProcessedData && 
+            Object.keys(lastProcessedData).length === Object.keys(schedules).length &&
+            Object.keys(lastProcessedData).every(key => 
+              lastProcessedData[key]?.length === schedules[key]?.length
+            )) {
+          return; // No changes, skip processing
+        }
+        
+        // Store the latest schedules
+        latestSchedulesRef.current = schedules;
+        lastProcessedData = schedules;
+        
+        // Get current trainer name from ref
         const currentTrainerName = trainerNameRef.current;
         
         // If trainer name is available, process immediately
         if (currentTrainerName) {
-          processSchedulesRef.current(allSchedules, currentTrainerName);
+          processSchedulesRef.current(schedules, currentTrainerName);
           
           if (initialLoad) {
             setLoading(false);
@@ -338,8 +344,7 @@ const TrainerSchedulePage = () => {
           }
         } else {
           // Trainer name not available yet, but mark as loaded
-          if (initialLoad && allSchedules) {
-            console.log('📅 Schedule data loaded, waiting for trainer name...');
+          if (initialLoad && Object.keys(schedules).length > 0) {
             setLoading(false);
             initialLoad = false;
           }
@@ -358,12 +363,11 @@ const TrainerSchedulePage = () => {
       isMounted = false;
       unsubscribe();
     };
-  }, [user?.uid]); // Only depend on user.uid - subscription stays active
+  }, [user?.uid]); // Only depend on user.uid
 
   // Process schedules when trainer name becomes available
   useEffect(() => {
     if (trainerName && Object.keys(latestSchedulesRef.current).length > 0) {
-      console.log('📅 Trainer name now available, processing stored schedules...');
       processSchedulesRef.current(latestSchedulesRef.current, trainerName);
     }
   }, [trainerName]); // Re-process when trainer name becomes available
@@ -602,12 +606,12 @@ const TrainerSchedulePage = () => {
   // and can access their schedule right away (with verification pending in Trainer Accounts)
 
   if (checkingPermission || loading) {
-    return <LoadingSkeleton message="Loading your schedule..." className="h-[60vh]" />;
+    return <LoadingSkeleton message="Loading schedule..." className="h-[60vh]" />;
   }
 
   return (
-    <div className="min-h-full">
-      <div className={cn(sectionSpacing, panelPadding, 'flex flex-col gap-6')}>
+    <div className="min-h-full w-full">
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-5 flex flex-col gap-4 sm:gap-6">
       {/* Location Permission Modal */}
       <LocationPermissionModal
         isOpen={showLocationModal}
@@ -618,23 +622,25 @@ const TrainerSchedulePage = () => {
 
       {/* Location Warning */}
       {!locationGranted && (
-        <div className={cn(cardStyles.surface, cardPadding, 'border border-rose-200 bg-rose-50')}>
-          <div className="flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 flex-shrink-0 text-rose-600" aria-hidden="true" />
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-rose-900">Location Access Required</p>
-              <p className="mt-1 text-xs text-rose-800">
-                You must enable location access to use this application and clock in/out.
-              </p>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+          className={cn(cardStyles.surface, 'p-3 sm:p-4 border border-rose-200 bg-rose-50 rounded-lg')}
+        >
+          <div className="flex items-center gap-3">
+            <AlertCircle className="h-4 w-4 sm:h-5 sm:w-5 flex-shrink-0 text-rose-600" aria-hidden="true" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-rose-900">Location Required</p>
               <button
                 onClick={() => setShowLocationModal(true)}
-                className="mt-3 text-sm font-medium text-rose-700 underline underline-offset-2 transition hover:text-rose-900"
+                className="mt-1.5 text-xs sm:text-sm font-medium text-rose-700 hover:text-rose-900 underline underline-offset-2 transition-colors"
               >
-                Enable Location Access Now
+                Enable Location
               </button>
             </div>
           </div>
-        </div>
+        </motion.div>
       )}
 
       {/* Stats Cards - Now in command ribbon, keeping here as fallback */}
@@ -690,17 +696,30 @@ const TrainerSchedulePage = () => {
         </div>
       )}
 
-      {/* Calendar - Always show, even with no tasks */}
-      <TrainerCalendar
-        schedules={schedules}
-        clockStatus={clockStatus}
-        onDateClick={handleDateClick}
-      />
+      {/* Calendar - Show only after data is loaded and schedules are ready */}
+      {!loading && Object.keys(schedules).length >= 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: 0.1 }}
+        >
+          <TrainerCalendar
+          schedules={schedules}
+          clockStatus={clockStatus}
+          onDateClick={handleDateClick}
+          selectedDate={selectedDate}
+          onSelectionChange={setSelectedDate}
+        />
+        </motion.div>
+      )}
 
       {/* Task Details Modal */}
       <TaskDetailsModal
         isOpen={showTaskModal}
-        onClose={() => setShowTaskModal(false)}
+        onClose={() => {
+          setShowTaskModal(false);
+          setSelectedDate(null); // Deselect when modal closes
+        }}
         date={selectedDate}
         tasks={selectedTasks}
       />

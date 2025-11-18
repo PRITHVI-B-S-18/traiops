@@ -8,7 +8,7 @@ export const getAppBaseUrl = () => {
     return window.location.origin.replace(/\/$/, '');
   }
 
-  return '';
+  return 'https://trainer-scheduler-1812.web.app';
 };
 
 export const buildAppUrl = (path = '') => {

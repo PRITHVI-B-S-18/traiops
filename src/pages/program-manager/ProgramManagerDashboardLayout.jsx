@@ -52,7 +52,7 @@ const ProgramManagerDashboardLayout = () => {
   };
 
   const navItems = [
-    { path: '/program-manager/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { path: '/program-manager/home', label: 'Home', icon: LayoutDashboard },
     { path: '/program-manager/trainers', label: 'My Trainers', icon: Users },
     { path: '/program-manager/requests', label: 'Request Approvals', icon: ClipboardCheck },
     { path: '/program-manager/history', label: 'Request History', icon: History }
@@ -80,7 +80,7 @@ const ProgramManagerDashboardLayout = () => {
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           {!sidebarCollapsed && (
             <Link
-              to="/program-manager/dashboard"
+              to="/program-manager/home"
               className="text-lg font-semibold text-slate-900"
               onClick={() => setSidebarOpen(false)}
             >

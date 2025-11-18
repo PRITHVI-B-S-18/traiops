@@ -12,16 +12,32 @@ export const filterTrainerSchedules = (allSchedules, trainerName) => {
     return {};
   }
 
+  if (!trainerName || typeof trainerName !== 'string') {
+    console.warn('filterTrainerSchedules: Invalid trainer name:', trainerName);
+    return {};
+  }
+
   const trainerSchedules = {};
+  const trainerNameTrimmed = trainerName.trim();
 
   // Filter schedules for this trainer
   Object.entries(allSchedules).forEach(([date, tasks]) => {
     if (Array.isArray(tasks)) {
-      const trainerTasks = tasks.filter(task => task.trainer === trainerName);
+      const trainerTasks = tasks.filter(task => {
+        const taskTrainer = task.trainer ? task.trainer.trim() : '';
+        return taskTrainer === trainerNameTrimmed;
+      });
       if (trainerTasks.length > 0) {
         trainerSchedules[date] = trainerTasks;
       }
     }
+  });
+
+  console.log('filterTrainerSchedules:', {
+    trainerName: trainerNameTrimmed,
+    totalDates: Object.keys(allSchedules).length,
+    filteredDates: Object.keys(trainerSchedules).length,
+    sampleTasks: Object.values(trainerSchedules).flat().slice(0, 2)
   });
 
   return trainerSchedules;

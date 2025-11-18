@@ -215,10 +215,10 @@ const AdminDashboardLayout = () => {
                   {commandState.description && (
                       <p className="text-sm text-slate-500 mt-1">{commandState.description}</p>
                   )}
-                  <div className="flex items-center gap-2 mt-2">
+                  {/* <div className="flex items-center gap-2 mt-2">
                     <span className="text-xs text-slate-400">Timezone:</span>
                     <span className="text-xs font-medium text-slate-600">{getUserTimezone()}</span>
-                  </div>
+                  </div> */}
                   </div>
                 </div>
                 {commandState.actions && (

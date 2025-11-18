@@ -241,55 +241,16 @@ const TrainerManagementPage = () => {
         }
       }
     } else {
-      // Add new trainer
+      // Add new trainer - only store in trainers collection
+      // To create auth account, use "Sync Accounts" to send invitation email
       const newTrainer = { ...form };
       setTrainers(ts => [...ts, newTrainer]);
-    closeModal();
+      closeModal();
       
-      // Auto-create Firebase Auth account for new trainer
-      if (user?.uid && form.email) {
-        toast({
-          title: "Creating Account",
-          description: "Creating Firebase Auth account for trainer...",
-        });
-        
-        try {
-          const { createTrainerAuthAccount } = await import('../../utils/trainerSync');
-          const result = await createTrainerAuthAccount(newTrainer, user.uid);
-          
-          if (result.success && !result.skipped) {
-            toast({
-              title: "Account Created",
-              description: `Firebase Auth account created for ${form.name}. Default password: ${result.password}`,
-            });
-            
-            if (result.requiresReLogin) {
-              toast({
-                title: "Re-login Required",
-                description: "You will be signed out. Please log in again.",
-              });
-            }
-          } else if (result.skipped) {
-            toast({
-              title: "Account Exists",
-              description: `${form.name} already has a Firebase Auth account.`,
-            });
-          } else {
-            toast({
-              title: "Account Creation Failed",
-              description: result.error || "Failed to create Firebase Auth account",
-              variant: "destructive"
-            });
-          }
-        } catch (error) {
-          console.error('Error auto-creating account:', error);
-          toast({
-            title: "Error",
-            description: "Failed to create Firebase Auth account",
-            variant: "destructive"
-          });
-        }
-      }
+      toast({
+        title: "Trainer Added",
+        description: `${form.name} has been added. Use "Sync Accounts" to send an invitation email.`,
+      });
     }
   };
 

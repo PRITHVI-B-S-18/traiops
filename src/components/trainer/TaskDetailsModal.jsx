@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Clock, MapPin, Calendar, User, Briefcase, CheckCircle, XCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { X, Clock, MapPin, Calendar, User, Briefcase, CheckCircle, XCircle, AlertCircle, Loader2, BookOpen, Building2, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/useAuth';
 import { useLocation } from '@/hooks/useLocation';
@@ -10,8 +11,9 @@ import { db } from '@/firebase';
 import { useToast } from '@/components/ui/use-toast';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
+import { formatTimestamp } from '@/utils/timezoneUtils';
 
-const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
+const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions = true }) => {
   const { user } = useAuth();
   const { toast } = useToast();
   const { requestLocation, loading: locationLoading } = useLocation(user?.uid);
@@ -23,6 +25,7 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
   const [isClockingIn, setIsClockingIn] = useState(false);
   const [isClockingOut, setIsClockingOut] = useState(false);
   const [rejectionReason, setRejectionReason] = useState(null);
+  const [showClockOutButton, setShowClockOutButton] = useState(false); // Controls delayed display of clock-out button
 
   // Real-time listener for clock requests for this specific date
   useEffect(() => {
@@ -124,6 +127,7 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
                 console.log('✅ Real-time: Setting clock-in status to approved');
                 setClockInStatus('approved');
                 setClockInData(record.clockIn);
+                setShowClockOutButton(true); // Show immediately if approved
               }
               
               // Update clock-out status immediately when clock-out happens
@@ -190,6 +194,10 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
           console.log('✅ Real-time: Setting clock-in status:', clockInReq.status, 'for date:', dateStr);
           setClockInStatus(clockInReq.status);
           setClockInData(clockInReq);
+          // If status is approved, show clock-out button immediately
+          if (clockInReq.status === 'approved') {
+            setShowClockOutButton(true);
+          }
           if (clockInReq.status === 'rejected' && clockInReq.rejections?.length > 0) {
             setRejectionReason(clockInReq.rejections[0].reason);
           }
@@ -218,6 +226,25 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
       }
     };
   }, [isOpen, user?.uid, date]);
+
+  // Delay showing clock-out button by 2 seconds when clock-in status becomes pending
+  useEffect(() => {
+    if (clockInStatus === 'pending') {
+      // Reset the button visibility
+      setShowClockOutButton(false);
+      // Show after 2 seconds
+      const timer = setTimeout(() => {
+        setShowClockOutButton(true);
+      }, 0 * 1000);
+      return () => clearTimeout(timer);
+    } else if (clockInStatus === 'approved') {
+      // Show immediately if approved
+      setShowClockOutButton(true);
+    } else if (clockInStatus === null || clockInStatus === 'rejected') {
+      // Hide if no clock-in or rejected
+      setShowClockOutButton(false);
+    }
+  }, [clockInStatus]);
 
   const handleClockIn = async () => {
     if (!user?.uid || !date) return;
@@ -485,7 +512,8 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
     
     // Check if clocked in (for this date or previous date)
     // Allow clock-out even if clock-in was on a previous date (edge case: forgot to clock out)
-    if (clockInStatus !== 'approved' && !existingRecord?.clockIn) {
+    // Allow clock-out if clock-in is pending or approved
+    if (clockInStatus !== 'pending' && clockInStatus !== 'approved' && !existingRecord?.clockIn) {
       // Check if there's a clock-in from a previous date
       const yesterday = new Date(date);
       yesterday.setDate(yesterday.getDate() - 1);
@@ -545,9 +573,9 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
       // Check if clock record exists for this date (or previous date if forgot to clock out)
       let existingRecord = await getClockRecordByDate(user.uid, dateStr);
       
-      // Edge case: If no record for today but clock-in was approved, check if we need to create record
+      // Edge case: If no record for today but clock-in was pending or approved, check if we need to create record
       // Or if clock-in was yesterday and forgot to clock out
-      if (!existingRecord && clockInStatus === 'approved' && clockInData) {
+      if (!existingRecord && (clockInStatus === 'pending' || clockInStatus === 'approved') && clockInData) {
         // Create record with clock-in data
         const recordData = {
           trainerId: user.uid,
@@ -767,108 +795,229 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
 
   if (!isOpen) return null;
 
-  return (
+  const modalContent = (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed top-0 left-0 right-0 bottom-0 w-screen h-screen bg-black/80 z-50 flex items-center justify-center p-3 sm:p-4"
+        onClick={onClose}
+      >
         <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.95 }}
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }}
+          transition={{ duration: 0.2, ease: 'easeOut' }}
           onClick={(e) => e.stopPropagation()}
-          className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+          className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col"
         >
           {/* Header */}
-          <div className="bg-gradient-to-r from-[#5A5A5A] to-[#3D3D3D] p-6 flex items-center justify-between rounded-t-lg">
-            <div>
-              <h2 className="text-2xl font-bold text-white">Task Details</h2>
-              <p className="text-sm text-white/80 mt-1">
+          <div className="bg-gradient-to-r from-slate-700 to-slate-800 px-4 py-3 sm:px-5 sm:py-4 flex items-center gap-3 flex-shrink-0">
+            <button
+              onClick={onClose}
+              className="p-1.5 hover:bg-white/10 rounded-lg transition-colors flex-shrink-0"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+            </button>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg sm:text-xl font-bold text-white">Task Details</h2>
+              <p className="text-[11px] sm:text-xs text-white/70 mt-0.5">
                 {date && format(new Date(date), 'EEEE, MMMM d, yyyy')}
               </p>
             </div>
-            <button
-              onClick={onClose}
-              className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-            >
-              <X className="w-5 h-5 text-white" />
-            </button>
           </div>
 
-          {/* Content */}
-          <div className="p-6 space-y-6">
+          {/* Content - Scrollable */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
             {/* Tasks List */}
             {tasks.length > 0 ? (
-              <div className="space-y-4">
-                <h3 className="text-lg font-semibold text-[#2C2C2C] flex items-center gap-2">
-                  <Briefcase className="w-5 h-5" />
-                  Assigned Tasks ({tasks.length})
-                </h3>
+              <div className="space-y-3">
                 {tasks.map((task, index) => (
-                  <div key={index} className="bg-[#F5F5F5] p-4 rounded-lg border border-[#E0E0E0]">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
-                          {task.type === 'training' ? (
-                            <div className="px-2 py-1 bg-green-100 text-green-700 text-xs font-medium rounded">
-                              Training Session
+                  <div key={index} className="bg-slate-50 rounded-lg p-3.5 border border-slate-200">
+                    {/* Task Type Badge */}
+                    <div className="flex items-center gap-2 mb-2.5">
+                      {task.type === 'training' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">
+                          <BookOpen className="h-3 w-3 mr-1" />
+                          Training Session
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700">
+                          <Briefcase className="h-3 w-3 mr-1" />
+                          Non-Training Task
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Task Details - Compact Grid */}
+                    <div className="space-y-2">
+                      {task.type === 'training' ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <BookOpen className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-[11px] text-slate-500">Course</span>
+                              <p className="text-sm font-semibold text-slate-800 leading-tight">{task.course}</p>
                             </div>
-                          ) : (
-                            <div className="px-2 py-1 bg-orange-100 text-orange-700 text-xs font-medium rounded">
-                              Non-Training Task
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-[11px] text-slate-500">Client</span>
+                              <p className="text-sm text-slate-700 leading-tight truncate">{task.client}</p>
+                            </div>
+                          </div>
+                          {task.role && (
+                            <div className="flex items-center gap-2">
+                              <User className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <span className="text-[11px] text-slate-500">Role</span>
+                                <p className="text-sm text-slate-700 leading-tight">{task.role}</p>
+                              </div>
                             </div>
                           )}
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <FileText className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-[11px] text-slate-500">Task Details</span>
+                              <p className="text-sm font-semibold text-slate-800 leading-tight">{task.taskDetails}</p>
+                            </div>
+                          </div>
+                          {task.taskType && (
+                            <div className="flex items-center gap-2">
+                              <Briefcase className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <span className="text-[11px] text-slate-500">Task Type</span>
+                                <p className="text-sm text-slate-700 leading-tight">{task.taskType}</p>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {task.description && (
+                        <div className="pt-2 mt-2 border-t border-slate-200">
+                          <span className="text-[11px] text-slate-500 block mb-1">Description</span>
+                          <p className="text-xs text-slate-600 leading-relaxed">{task.description}</p>
                         </div>
-                        {task.type === 'training' ? (
-                          <>
-                            <p className="text-sm text-[#666666]"><span className="font-medium">Course:</span> {task.course}</p>
-                            <p className="text-sm text-[#666666]"><span className="font-medium">Client:</span> {task.client}</p>
-                            <p className="text-sm text-[#666666]"><span className="font-medium">Role:</span> {task.role}</p>
-                          </>
-                        ) : (
-                          <>
-                            <p className="text-sm text-[#666666]"><span className="font-medium">Task:</span> {task.taskDetails}</p>
-                            <p className="text-sm text-[#666666]"><span className="font-medium">Type:</span> {task.taskType}</p>
-                          </>
-                        )}
-                        {task.description && (
-                          <p className="text-sm text-[#888888] mt-2">{task.description}</p>
-                        )}
-                      </div>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
               <div className="text-center py-8">
-                <Calendar className="w-12 h-12 text-[#D0D0D0] mx-auto mb-3" />
-                <p className="text-[#666666]">No tasks scheduled for this date</p>
+                <Calendar className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                <p className="text-sm text-slate-500">No tasks scheduled for this date</p>
               </div>
             )}
 
-            {/* Clock-in/out Section */}
-            <div className="border-t border-[#E0E0E0] pt-6">
-              <h3 className="text-lg font-semibold text-[#2C2C2C] flex items-center gap-2 mb-4">
-                <Clock className="w-5 h-5" />
-                Attendance
+            {/* Clock-in/out Section - Only show if showClockActions is true */}
+            {showClockActions && (
+            <div className="border-t border-slate-200 pt-4">
+              <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2 mb-3">
+                <Clock className="w-4 h-4 text-slate-600" />
+                Attendance - Today
               </h3>
 
               {/* Rejection Notice */}
               {clockInStatus === 'rejected' && rejectionReason && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-                  <div className="flex items-start gap-3">
-                    <XCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 mb-3">
+                  <div className="flex items-start gap-2">
+                    <XCircle className="w-3.5 h-3.5 text-red-600 flex-shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-medium text-red-900 text-sm">Clock-in/out disabled for this day</p>
-                      <p className="text-sm text-red-700 mt-1">{rejectionReason}</p>
+                      <p className="font-medium text-red-900 text-[11px]">Clock-in/out disabled for this day</p>
+                      <p className="text-[11px] text-red-700 mt-0.5">{rejectionReason}</p>
                     </div>
                   </div>
                 </div>
               )}
 
+              {/* Clock In/Out Status Display */}
+              <div className="space-y-2.5 mb-3">
+                {/* Clock In Status */}
+                <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-200">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Clock In</span>
+                    {clockInStatus === 'approved' && clockInData?.timestamp && (
+                      <span className="text-[11px] font-semibold text-green-600">
+                        {clockInData.timestamp?.toDate 
+                          ? formatTimestamp(clockInData.timestamp.toDate(), 'hh:mm a')
+                          : clockInData.timestamp 
+                          ? formatTimestamp(new Date(clockInData.timestamp), 'hh:mm a')
+                          : 'N/A'}
+                      </span>
+                    )}
+                    {clockInStatus === 'pending' && (
+                      <span className="text-[11px] font-semibold text-orange-600">Pending Approval</span>
+                    )}
+                    {!clockInStatus && (
+                      <span className="text-[11px] font-medium text-slate-400">Not clocked in</span>
+                    )}
+                  </div>
+                  {clockInData && clockInStatus === 'approved' && clockInData.location && (
+                    <div className="mt-1.5 flex items-start gap-1.5">
+                      <MapPin className="w-3 h-3 text-slate-400 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] text-slate-600 break-words leading-tight">
+                          {clockInData.location.formattedAddress || 
+                           clockInData.location.placeName || 
+                           clockInData.location.institution || 
+                           clockInData.location.building || 
+                           'Location not available'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Clock Out Status */}
+                <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-200">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Clock Out</span>
+                    {clockOutStatus === 'approved' && clockOutData?.timestamp && (
+                      <span className="text-[11px] font-semibold text-green-600">
+                        {clockOutData.timestamp?.toDate 
+                          ? formatTimestamp(clockOutData.timestamp.toDate(), 'hh:mm a')
+                          : clockOutData.timestamp 
+                          ? formatTimestamp(new Date(clockOutData.timestamp), 'hh:mm a')
+                          : 'N/A'}
+                      </span>
+                    )}
+                    {!clockOutStatus && (clockInStatus === 'pending' || clockInStatus === 'approved') && (
+                      <span className="text-[11px] font-medium text-slate-400">Missing</span>
+                    )}
+                    {!clockInStatus && (
+                      <span className="text-[11px] font-medium text-slate-400">Not available</span>
+                    )}
+                  </div>
+                  {clockOutData && clockOutStatus === 'approved' && clockOutData.location && (
+                    <div className="mt-1.5 flex items-start gap-1.5">
+                      <MapPin className="w-3 h-3 text-slate-400 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] text-slate-600 break-words leading-tight">
+                          {clockOutData.location.formattedAddress || 
+                           clockOutData.location.placeName || 
+                           clockOutData.location.institution || 
+                           clockOutData.location.building || 
+                           'Location not available'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* Clock-in/out Buttons */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-3">
                 <Button
                   onClick={handleClockIn}
                   disabled={isClockingIn || clockInStatus === 'approved' || clockInStatus === 'pending' || clockInStatus === 'rejected'}
+                  size="sm"
                   className={`w-full ${
                     clockInStatus === 'approved'
                       ? 'bg-green-600 hover:bg-green-600'
@@ -882,56 +1031,36 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [] }) => {
                   {getClockInButtonContent()}
                 </Button>
 
-                <Button
-                  onClick={handleClockOut}
-                  disabled={isClockingOut || clockOutStatus === 'approved' || clockInStatus !== 'approved' || clockInStatus === 'rejected'}
-                  className={`w-full ${
-                    clockOutStatus === 'approved'
-                      ? 'bg-green-600 hover:bg-green-600'
-                      : 'bg-[#5A5A5A] hover:bg-[#3D3D3D]'
-                  }`}
-                >
-                  {getClockOutButtonContent()}
-                </Button>
-              </div>
-
-              {/* Status Info */}
-              {clockInData && clockInStatus === 'approved' && clockInData.location && (
-                <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="flex items-start gap-3">
-                    <MapPin className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-                    <div className="flex-1 min-w-0 text-sm">
-                      <p className="font-medium text-green-900 mb-1">
-                        Clock-in Location: {clockInData.location.placeName || clockInData.location.institution || clockInData.location.building || 'Location'}
-                      </p>
-                      <p className="text-xs text-green-700 break-words">
-                        {clockInData.location.formattedAddress || 
-                          `${clockInData.location.city || ''}, ${clockInData.location.state || ''}, ${clockInData.location.postcode || ''}, ${clockInData.location.country || ''}`
-                            .replace(/^,\s*|,\s*$/g, '')
-                            .replace(/,\s*,/g, ',')
-                            .trim() || 'N/A'}
-                      </p>
-                    </div>
+                {/* Clock Out Section - Show with delay if pending, immediately if approved */}
+                {showClockActions && showClockOutButton && (clockInStatus === 'pending' || clockInStatus === 'approved') && clockOutStatus !== 'approved' && (
+                  <div className="space-y-2">
+                    {/* Instructional Note */}
+                    <p className="text-xs text-slate-500 italic text-center">
+                      💡 Clock out when your training session is complete
+                    </p>
+                    
+                    {/* Clock Out Button */}
+                    <Button
+                      onClick={handleClockOut}
+                      disabled={isClockingOut}
+                      size="sm"
+                      className="w-full bg-emerald-600 hover:bg-emerald-700"
+                    >
+                      {getClockOutButtonContent()}
+                    </Button>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
+            )}
           </div>
 
-          {/* Footer */}
-          <div className="border-t border-[#E0E0E0] p-4 bg-[#F5F5F5] flex justify-end rounded-b-lg">
-            <Button
-              onClick={onClose}
-              variant="outline"
-              className="border-[#D0D0D0] hover:bg-[#E8E8E8]"
-            >
-              Close
-            </Button>
-          </div>
         </motion.div>
-      </div>
+      </motion.div>
     </AnimatePresence>
   );
+
+  return createPortal(modalContent, document.body);
 };
 
 export default TaskDetailsModal;

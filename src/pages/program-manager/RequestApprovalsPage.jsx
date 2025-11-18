@@ -19,7 +19,6 @@ import {
   Building2,
   User,
   Clock3,
-  RefreshCw,
   X,
   AlertTriangle
 } from 'lucide-react';
@@ -47,7 +46,6 @@ export default function RequestApprovalsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
   const [filterType, setFilterType] = useState('all'); // 'all', 'clock_in', 'clock_out'
-  const [refreshing, setRefreshing] = useState(false);
   const [liveUpdatesPaused, setLiveUpdatesPaused] = useState(false);
   const [listenerError, setListenerError] = useState(null);
   const [subscriptionKey, setSubscriptionKey] = useState(0);
@@ -66,6 +64,7 @@ export default function RequestApprovalsPage() {
   // Filter states
   const [selectedTrainer, setSelectedTrainer] = useState('all');
   const [dateRange, setDateRange] = useState({ startDate: '', endDate: '' });
+  const [filtersVisible, setFiltersVisible] = useState(false);
 
   // Real-time listener for clock requests
   useEffect(() => {
@@ -121,18 +120,6 @@ export default function RequestApprovalsPage() {
     setLiveUpdatesPaused(false);
     setListenerError(null);
     setSubscriptionKey((prev) => prev + 1);
-  };
-
-  const handleRefresh = async () => {
-    // Refresh is no longer needed with real-time updates, but keeping for manual refresh option
-    setRefreshing(true);
-    try {
-      const data = await getPendingClockRequests(user.uid);
-      setRequests(data);
-    } catch (error) {
-      console.error('Error refreshing requests:', error);
-    }
-    setRefreshing(false);
   };
 
   // Open approve modal
@@ -356,19 +343,7 @@ export default function RequestApprovalsPage() {
       setCommandState({
         title: 'Request Approvals',
         description: 'Review and approve clock-in/out requests from your trainers.',
-        actions: (
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className={cn(
-              'flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm transition-colors',
-              'bg-white hover:bg-slate-50 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400'
-            )}
-          >
-            <RefreshCw className={refreshing ? 'animate-spin' : ''} size={16} aria-hidden="true" />
-            Refresh
-          </button>
-        ),
+        actions: null,
         metrics: !loading ? [
           <div key="total" className={cn(cardStyles.surface, cardPadding)}>
             <div className="flex items-center justify-between">
@@ -436,8 +411,25 @@ export default function RequestApprovalsPage() {
 
       {/* Header and Stats removed - now in command ribbon */}
 
+      {/* Filter Toggle */}
+      <div className="flex justify-end mb-3">
+        <button
+          onClick={() => setFiltersVisible((prev) => !prev)}
+          className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 bg-white hover:bg-slate-50 transition-colors"
+          aria-expanded={filtersVisible}
+          aria-controls="request-filter-panel"
+        >
+          <Filter className="h-4 w-4" />
+          {filtersVisible ? 'Hide Filters' : 'Show Filters'}
+        </button>
+      </div>
+
       {/* Filters */}
-      <div className={cn(cardStyles.surface, cardPadding, 'space-y-4')}>
+      {filtersVisible && (
+      <div
+        id="request-filter-panel"
+        className={cn(cardStyles.surface, cardPadding, 'space-y-4')}
+      >
         {/* Search and Type Filters */}
         <div className="flex flex-col md:flex-row gap-3">
           <div className="relative flex-1">
@@ -545,6 +537,7 @@ export default function RequestApprovalsPage() {
           </button>
         )}
       </div>
+      )}
 
       {/* Error Banner */}
       {error && (

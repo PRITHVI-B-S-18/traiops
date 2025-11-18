@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
-import { CalendarDays, LogOut, Menu, X, History, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { CalendarDays, LogOut, Menu, X, History, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Home } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils';
 import {
@@ -39,7 +39,8 @@ const TrainerDashboardLayout = () => {
   };
 
   const navItems = [
-    { path: '/trainer/schedule', label: 'My Schedule', icon: CalendarDays },
+    { path: '/trainer/home', label: 'Home', icon: Home },
+    { path: '/trainer/schedule', label: 'Overall Schedules', icon: CalendarDays },
     { path: '/trainer/history', label: 'Clock History', icon: History },
   ];
 
@@ -181,7 +182,7 @@ const TrainerDashboardLayout = () => {
         <main className="flex-1 overflow-y-auto lg:h-screen lg:overflow-y-auto">
           <div className="mx-auto h-full w-full max-w-6xl px-4 py-6 sm:px-5">
             <div className="space-y-4">
-              <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-4 py-4 shadow-sm sm:px-5 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex items-start gap-3 flex-1 min-w-0">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -204,10 +205,10 @@ const TrainerDashboardLayout = () => {
                     {commandState.description && (
                       <p className="text-sm text-slate-500 mt-1">{commandState.description}</p>
                     )}
-                    <div className="flex items-center gap-2 mt-2">
+                    {/* <div className="flex items-center gap-2 mt-2">
                       <span className="text-xs text-slate-400">Timezone:</span>
                       <span className="text-xs font-medium text-slate-600">{getUserTimezone()}</span>
-                    </div>
+                    </div> */}
                   </div>
                 </div>
                 {commandState.actions && (

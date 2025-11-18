@@ -94,9 +94,9 @@ export default function SignupPage() {
 
           const targetPath =
             result.role === 'trainer'
-              ? '/trainer/schedule'
+              ? '/trainer/home'
               : result.role === 'program_manager'
-                ? '/program-manager/dashboard'
+                ? '/program-manager/home'
                 : '/login';
 
           setTimeout(() => {
