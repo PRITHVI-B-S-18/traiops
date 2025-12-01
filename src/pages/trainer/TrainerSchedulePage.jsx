@@ -586,6 +586,19 @@ const TrainerSchedulePage = () => {
   };
 
   const handleDateClick = (date, tasks) => {
+    console.log('📅 Date clicked:', { date, tasks, taskCount: tasks?.length || 0 });
+    if (tasks && tasks.length > 0) {
+      console.log('📋 Task details:', tasks.map(t => ({
+        type: t.type,
+        course: t.course,
+        client: t.client,
+        role: t.role,
+        taskDetails: t.taskDetails,
+        taskType: t.taskType,
+        description: t.description,
+        hasAllFields: !!(t.course || t.taskDetails)
+      })));
+    }
     setSelectedDate(date);
     setSelectedTasks(tasks || []);
     setShowTaskModal(true);
@@ -722,6 +735,8 @@ const TrainerSchedulePage = () => {
         }}
         date={selectedDate}
         tasks={selectedTasks}
+        showClockActions={true}
+        showClockButtons={false}
       />
     </div>
     </div>

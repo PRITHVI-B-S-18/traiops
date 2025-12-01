@@ -4,11 +4,11 @@ import { useOutletContext } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Upload, Download, Calendar, X, Edit3, PlusCircle, Filter, Search, X as CloseIcon, ChevronDown, ChevronUp, AlertTriangle, Mail, Trash2, ArrowLeft, Users, Clock, BarChart3, Loader2 } from 'lucide-react';
+import { Upload, Download, Calendar, X, Edit3, PlusCircle, Filter, Search, X as CloseIcon, ChevronDown, ChevronUp, AlertTriangle, Mail, Trash2, ArrowLeft, Users, Clock, BarChart3, Loader2, Database, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 import { useToast } from "@/components/ui/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import TrainerMatrixView from './TrainerMatrixView';
-import { saveScheduleData, loadScheduleData, subscribeToScheduleUpdates } from '../../utils/firestoreSchedule';
+import { saveScheduleData, loadScheduleData, subscribeToScheduleUpdates, migrateScheduleData } from '../../utils/firestoreSchedule';
 import { loadTrainerData } from '../../utils/firestoreTrainers';
 import { useDebounce } from '@/hooks/useDebounce';
 import { notifyScheduleCreated, notifyScheduleUpdated, notifyScheduleDeleted, notifyNonTrainingCreated, notifyNonTrainingUpdated, notifyNonTrainingDeleted } from '../../utils/emailService';
@@ -212,6 +212,11 @@ const SchedulePage = () => {
     nonTrainingTaskTypes: [], // For non-training task type filters
   });
 
+  // Migration state
+  const [isMigrationModalOpen, setIsMigrationModalOpen] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [migrationResult, setMigrationResult] = useState(null);
+
   const resolveClientName = useCallback(
     (clientValue, fallbackText = '') => {
       const valuesToCheck = [];
@@ -290,6 +295,37 @@ const SchedulePage = () => {
   const handleConfirmCancel = () => {
     if (confirmState.resolve) confirmState.resolve(false);
     setConfirmState((prev) => ({ ...prev, open: false, resolve: null }));
+  };
+
+  // Migration handler
+  const handleMigration = async () => {
+    setIsMigrating(true);
+    setMigrationResult(null);
+    try {
+      const result = await migrateScheduleData();
+      setMigrationResult({
+        success: true,
+        message: result.message,
+        monthsMigrated: result.monthsMigrated || []
+      });
+      toast({
+        title: 'Migration Successful',
+        description: result.message,
+      });
+    } catch (error) {
+      console.error('Migration error:', error);
+      setMigrationResult({
+        success: false,
+        message: error.message || 'Migration failed. Please try again.',
+      });
+      toast({
+        title: 'Migration Failed',
+        description: error.message || 'An error occurred during migration.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsMigrating(false);
+    }
   };
 
   // Memoize flattened schedule data to avoid recalculating on every render
@@ -3056,6 +3092,15 @@ const SchedulePage = () => {
       <Button onClick={openScheduleModal} size="sm" className="flex items-center gap-2 whitespace-nowrap">
         <PlusCircle className="h-4 w-4" /> New Schedule
       </Button>
+      {/* <Button 
+        onClick={() => setIsMigrationModalOpen(true)} 
+        variant="outline" 
+        size="sm" 
+        className="flex items-center gap-2 whitespace-nowrap border-orange-200 text-orange-700 hover:bg-orange-50"
+        title="Migrate schedule data to month-based structure to avoid Firestore size limits"
+      >
+        <Database className="h-4 w-4" /> Migrate Data
+      </Button> */}
     </>
   ), [
     viewMode,
@@ -5642,6 +5687,111 @@ const SchedulePage = () => {
           <DialogFooter>
             <Button variant="outline" onClick={handleConfirmCancel}>{confirmState.cancelText}</Button>
             <Button onClick={handleConfirmOk}>{confirmState.okText}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Migration Modal */}
+      <Dialog open={isMigrationModalOpen} onOpenChange={setIsMigrationModalOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Database className="h-5 w-5 text-orange-600" />
+              Schedule Data Migration
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="text-sm text-gray-700">
+              <p className="mb-3">
+                This migration will split your schedule data from a single Firestore document into month-based documents to avoid the 1MB size limit.
+              </p>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">
+                <p className="text-sm font-semibold text-blue-900 mb-1">What this does:</p>
+                <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
+                  <li>Splits data from <code className="bg-blue-100 px-1 rounded">schedules/main</code> into monthly documents</li>
+                  <li>Creates documents like <code className="bg-blue-100 px-1 rounded">schedules/2024-01</code>, <code className="bg-blue-100 px-1 rounded">schedules/2024-02</code>, etc.</li>
+                  <li>Preserves all existing schedule data</li>
+                  <li>Improves performance and prevents size limit errors</li>
+                </ul>
+              </div>
+              {migrationResult && (
+                <div className={`rounded-lg p-3 border ${
+                  migrationResult.success 
+                    ? 'bg-green-50 border-green-200' 
+                    : 'bg-red-50 border-red-200'
+                }`}>
+                  <div className="flex items-start gap-2">
+                    {migrationResult.success ? (
+                      <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                    )}
+                    <div className="flex-1">
+                      <p className={`text-sm font-semibold ${
+                        migrationResult.success ? 'text-green-900' : 'text-red-900'
+                      }`}>
+                        {migrationResult.success ? 'Migration Completed' : 'Migration Failed'}
+                      </p>
+                      <p className={`text-sm mt-1 ${
+                        migrationResult.success ? 'text-green-800' : 'text-red-800'
+                      }`}>
+                        {migrationResult.message}
+                      </p>
+                      {migrationResult.success && migrationResult.monthsMigrated && migrationResult.monthsMigrated.length > 0 && (
+                        <div className="mt-2">
+                          <p className="text-xs font-medium text-green-700 mb-1">Months migrated:</p>
+                          <div className="flex flex-wrap gap-1">
+                            {migrationResult.monthsMigrated.map((month) => (
+                              <span key={month} className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
+                                {month}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!migrationResult && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                  <p className="text-sm text-yellow-800">
+                    <strong>Note:</strong> This is a one-time operation. After migration, you can safely delete the old <code className="bg-yellow-100 px-1 rounded">schedules/main</code> document from Firestore.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setIsMigrationModalOpen(false);
+                setMigrationResult(null);
+              }}
+              disabled={isMigrating}
+            >
+              {migrationResult ? 'Close' : 'Cancel'}
+            </Button>
+            {!migrationResult && (
+              <Button 
+                onClick={handleMigration}
+                disabled={isMigrating}
+                className="bg-orange-600 hover:bg-orange-700"
+              >
+                {isMigrating ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Migrating...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Start Migration
+                  </>
+                )}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

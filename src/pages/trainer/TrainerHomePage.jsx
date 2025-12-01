@@ -446,7 +446,7 @@ const TrainerHomePage = () => {
           countryCode: location.countryCode || '',
           postcode: location.postcode || ''
         },
-        approvedBy: isNonTrainingTask ? 'system' : user.uid,
+        approvedBy: user.uid, // Clock-out is always self-approved by trainer (no PM/Admin approval needed)
         approvedAt: Timestamp.now()
       };
 
@@ -457,7 +457,7 @@ const TrainerHomePage = () => {
           clockOut: clockOutData,
           status: 'completed',
           isNonTraining: isNonTrainingTask,
-          requiresApproval: !isNonTrainingTask
+          requiresApproval: false // Clock-out never requires approval
         });
       } else {
         // Create new record
@@ -470,7 +470,7 @@ const TrainerHomePage = () => {
           clockOut: clockOutData,
           status: 'completed',
           isNonTraining: isNonTrainingTask,
-          requiresApproval: !isNonTrainingTask,
+          requiresApproval: false, // Clock-out never requires approval
           taskId: currentTask?.id || null,
           taskType: currentTask?.taskType || null
         });

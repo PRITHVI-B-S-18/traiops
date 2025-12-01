@@ -1,0 +1,216 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to get user role
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return request.auth != null && getUserRole() == 'admin';
+    }
+    
+    // Helper function to check if user is program manager
+    function isProgramManager() {
+      return request.auth != null && getUserRole() == 'program_manager';
+    }
+    
+    // Helper function to check if user is trainer
+    function isTrainer() {
+      return request.auth != null && getUserRole() == 'trainer';
+    }
+    
+    // Helper function to check if user account is active
+    function isUserActive() {
+      return request.auth != null && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active';
+    }
+    
+    // Helper function to get trainer email from user document
+    function getTrainerEmail() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email;
+    }
+    
+    // Users collection - Only admins can create/update/delete
+    match /users/{userId} {
+      // Users can read their own document
+      allow read: if request.auth != null && 
+        (request.auth.uid == userId || isAdmin());
+      
+      // Only admins can create/update users
+      allow create: if isAdmin() && isUserActive();
+      allow update: if isAdmin() && isUserActive();
+      allow delete: if false; // Prevent deletion from client
+    }
+    
+    // Invitations - Allow unauthenticated reads for pending invitations
+    match /invitations/{token} {
+      // Admins can read all invitations (includes both get and list/query operations)
+      allow read: if isAdmin() && isUserActive();
+      
+      // Allow anyone to read a pending invitation by its token (for signup page)
+      // This must come after admin read to allow admin queries, but still allow public access to pending invites
+      allow get: if resource.data.status == 'pending';
+      
+      // Only authenticated admins can create/update
+      allow create: if isAdmin() && isUserActive();
+      
+      allow update: if request.auth != null && isUserActive() &&
+        (resource.data.invitedBy == request.auth.uid || isAdmin());
+      
+      // No deletes from the client
+      allow delete: if false;
+    }
+    
+    // Schedules collection - Month-based documents (e.g., schedules/2024-01)
+    match /schedules/{document} {
+      // All authenticated users can read schedules
+      allow read: if request.auth != null && isUserActive();
+      
+      // Only admins can write schedules
+      allow write: if isAdmin() && isUserActive();
+    }
+    
+    // Trainers collection - Readable by all, writable by admins only
+    match /trainers/{trainerId} {
+      // All authenticated users can read trainers
+      allow read: if request.auth != null && isUserActive();
+      
+      // Only admins can create/update trainers
+      allow create: if isAdmin() && isUserActive();
+      allow update: if isAdmin() && isUserActive();
+      allow delete: if false; // Prevent deletion from client
+    }
+    
+    // Clients collection - Readable by all, writable by admins only
+    match /clients/{clientId} {
+      // All authenticated users can read clients
+      allow read: if request.auth != null && isUserActive();
+      
+      // Only admins can create/update clients
+      allow create: if isAdmin() && isUserActive();
+      allow update: if isAdmin() && isUserActive();
+      allow delete: if false; // Prevent deletion from client
+    }
+    
+    // Clock Requests - Trainers can create, PMs/Admins can approve/reject
+    match /clock_requests/{requestId} {
+      // Trainers can read their own requests
+      // Program managers can read requests routed to them (check if routedToPMIds exists and contains their ID)
+      // Admins can read all requests
+      allow read: if request.auth != null && isUserActive() && (
+        resource.data.trainerId == request.auth.uid ||
+        (isProgramManager() && 
+         resource.data.routedToPMIds != null && 
+         request.auth.uid in resource.data.routedToPMIds) ||
+        isAdmin()
+      );
+      
+      // Trainers can create their own clock requests
+      // Note: routedToPMIds is set server-side, so we only validate trainerId
+      allow create: if isTrainer() && isUserActive() && 
+        request.resource.data.trainerId == request.auth.uid &&
+        request.resource.data.type in ['clock_in', 'clock_out'];
+      
+      // Program managers can update (approve/reject) requests routed to them
+      // Admins can update any request
+      // Also allow trainers to update their own pending requests (for cancellation scenarios)
+      allow update: if request.auth != null && isUserActive() && (
+        (isProgramManager() && 
+         resource.data.routedToPMIds != null && 
+         request.auth.uid in resource.data.routedToPMIds &&
+         resource.data.status == 'pending') ||
+        (isTrainer() && 
+         resource.data.trainerId == request.auth.uid &&
+         resource.data.status == 'pending') ||
+        isAdmin()
+      );
+      
+      // Only admins can delete
+      allow delete: if isAdmin() && isUserActive();
+    }
+    
+    // Clock Records - Readable by trainers (their own) and admins/PMs
+    match /clock_records/{recordId} {
+      // Trainers can read their own records
+      // Program managers can read all records (they need to see records for their assigned trainers)
+      // Admins can read all records
+      allow read: if request.auth != null && isUserActive() && (
+        resource.data.trainerId == request.auth.uid ||
+        isProgramManager() ||
+        isAdmin()
+      );
+      
+      // System/admins/PMs can create records (when requests are approved)
+      // Also allow trainers to create records for non-training tasks (auto-approved)
+      allow create: if request.auth != null && isUserActive() && (
+        isAdmin() || 
+        isProgramManager() ||
+        (isTrainer() && request.resource.data.trainerId == request.auth.uid)
+      );
+      
+      // Trainers can update their own records (for clock-out)
+      // Admins and program managers can update any records
+      allow update: if request.auth != null && isUserActive() && (
+        (isTrainer() && resource.data.trainerId == request.auth.uid) ||
+        isProgramManager() ||
+        isAdmin()
+      );
+      
+      // Only admins can delete records
+      allow delete: if isAdmin() && isUserActive();
+    }
+    
+    // Onboarding Requests - Trainers can create, Admins can approve/reject
+    match /onboarding_requests/{requestId} {
+      // Trainers can read their own requests
+      // Admins can read all requests
+      allow read: if request.auth != null && isUserActive() && (
+        resource.data.trainerId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      // Trainers can create their own onboarding requests
+      allow create: if isTrainer() && isUserActive() && 
+        request.resource.data.trainerId == request.auth.uid;
+      
+      // Only admins can update (approve/reject) onboarding requests
+      allow update: if isAdmin() && isUserActive();
+      
+      // No deletes from client
+      allow delete: if false;
+    }
+    
+    // Locations collection - Readable by all authenticated users
+    match /locations/{locationId} {
+      allow read: if request.auth != null && isUserActive();
+      allow write: if isAdmin() && isUserActive();
+    }
+    
+    // Mappings collection - Admin only
+    match /mappings/{mappingId} {
+      allow read: if request.auth != null && isUserActive();
+      allow write: if isAdmin() && isUserActive();
+    }
+    
+    // Trainer Profiles collection - Admin only
+    match /trainer_profiles/{profileId} {
+      // Only admins can read trainer profiles
+      allow read: if isAdmin() && isUserActive();
+      
+      // Only admins can create/update/delete trainer profiles
+      allow create: if isAdmin() && isUserActive();
+      allow update: if isAdmin() && isUserActive();
+      allow delete: if isAdmin() && isUserActive();
+    }
+    
+    // Default: Deny all other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Clock, MapPin, Calendar, User, Briefcase, CheckCircle, XCircle, AlertCircle, Loader2, BookOpen, Building2, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -13,7 +13,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
 import { formatTimestamp } from '@/utils/timezoneUtils';
 
-const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions = true }) => {
+const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions = true, showClockButtons = true }) => {
   const { user } = useAuth();
   const { toast } = useToast();
   const { requestLocation, loading: locationLoading } = useLocation(user?.uid);
@@ -26,28 +26,56 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
   const [isClockingOut, setIsClockingOut] = useState(false);
   const [rejectionReason, setRejectionReason] = useState(null);
   const [showClockOutButton, setShowClockOutButton] = useState(false); // Controls delayed display of clock-out button
+  const [requestedAt, setRequestedAt] = useState(null); // Store original requestedAt from clock_requests (always show this time)
+  const currentDateRef = useRef(null); // Track current date to prevent unnecessary resets
+  const unsubscribeRequestsRef = useRef(null); // Store unsubscribe function for clock_requests
+  const unsubscribeRecordsRef = useRef(null); // Store unsubscribe function for clock_records
 
   // Real-time listener for clock requests for this specific date
   useEffect(() => {
     if (!isOpen || !user?.uid || !date) {
-      // Reset states when modal closes or date changes
+      // Reset states when modal closes
+      if (!isOpen) {
+        // Clean up listeners when modal closes
+        if (unsubscribeRequestsRef.current) {
+          unsubscribeRequestsRef.current();
+          unsubscribeRequestsRef.current = null;
+        }
+        if (unsubscribeRecordsRef.current) {
+          unsubscribeRecordsRef.current();
+          unsubscribeRecordsRef.current = null;
+        }
+        setClockInStatus(null);
+        setClockOutStatus(null);
+        setClockInData(null);
+        setClockOutData(null);
+        setRejectionReason(null);
+        setRequestedAt(null);
+        currentDateRef.current = null;
+      }
+      return;
+    }
+
+    const dateStr = format(new Date(date), 'yyyy-MM-dd');
+    
+    // Only reset states if the date actually changed (not on every render)
+    const dateChanged = currentDateRef.current !== dateStr;
+    
+    if (dateChanged) {
+      console.log('🔍 Setting up real-time listener for date:', dateStr, '(date changed)');
+      currentDateRef.current = dateStr;
+      // Reset states only when date changes
       setClockInStatus(null);
       setClockOutStatus(null);
       setClockInData(null);
       setClockOutData(null);
       setRejectionReason(null);
-      return;
+      setRequestedAt(null);
+    } else {
+      // Date hasn't changed - listeners are already active, don't reset states or re-setup
+      console.log('🔍 Real-time listener already active for date:', dateStr, '- skipping re-initialization');
+      return; // Skip re-initialization if already set up for this date
     }
-
-    const dateStr = format(new Date(date), 'yyyy-MM-dd');
-    console.log('🔍 Setting up real-time listener for date:', dateStr);
-    
-    // Reset states first
-    setClockInStatus(null);
-    setClockOutStatus(null);
-    setClockInData(null);
-    setClockOutData(null);
-    setRejectionReason(null);
 
     // Fallback function for one-time check if listener fails
     const checkExistingRecordsOnce = async () => {
@@ -92,7 +120,15 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
               console.log('✅ Found approved record for date:', dateStr);
               if (record.clockIn) {
                 setClockInStatus('approved');
-                setClockInData(record.clockIn);
+                // Keep the requestedAt if already set, otherwise use clockIn data
+                setClockInData(prev => {
+                  const newData = { ...record.clockIn };
+                  // Preserve requestedAt from clock_requests if available
+                  if (prev?.requestedAt) {
+                    newData.requestedAt = prev.requestedAt;
+                  }
+                  return newData;
+                });
               }
               if (record.clockOut) {
                 setClockOutStatus('approved');
@@ -126,7 +162,17 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
               if (record.clockIn) {
                 console.log('✅ Real-time: Setting clock-in status to approved');
                 setClockInStatus('approved');
-                setClockInData(record.clockIn);
+                // Preserve requestedAt from clock_requests (always show original request time)
+                setClockInData(prev => {
+                  const newData = { ...record.clockIn };
+                  // Always preserve requestedAt if available (from clock_requests)
+                  if (prev?.requestedAt) {
+                    newData.requestedAt = prev.requestedAt;
+                  } else if (requestedAt) {
+                    newData.requestedAt = requestedAt;
+                  }
+                  return newData;
+                });
                 setShowClockOutButton(true); // Show immediately if approved
               }
               
@@ -145,6 +191,9 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
             console.error('❌ Error in clock records listener:', error);
           }
         );
+        
+        // Store unsubscribe function in ref
+        unsubscribeRecordsRef.current = unsubscribeRecords;
 
     checkApprovedRecords();
 
@@ -192,10 +241,30 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
 
         if (clockInReq) {
           console.log('✅ Real-time: Setting clock-in status:', clockInReq.status, 'for date:', dateStr);
-          setClockInStatus(clockInReq.status);
-          setClockInData(clockInReq);
-          // If status is approved, show clock-out button immediately
-          if (clockInReq.status === 'approved') {
+          // Always store the requestedAt from clock_requests (original request time)
+          if (clockInReq.requestedAt) {
+            setRequestedAt(clockInReq.requestedAt);
+          }
+          
+          if (clockInReq.status === 'pending' || clockInReq.status === 'rejected') {
+            setClockInStatus(clockInReq.status);
+            setClockInData(clockInReq);
+          } else if (clockInReq.status === 'approved') {
+            // For approved requests, update status but preserve requestedAt
+            setClockInStatus(clockInReq.status);
+            // Merge clock_requests data (with requestedAt) with any existing clock_records data
+            setClockInData(prev => {
+              if (prev) {
+                // If we have data from clock_records, merge it but keep requestedAt from clock_requests
+                return {
+                  ...prev,
+                  requestedAt: clockInReq.requestedAt || prev.requestedAt,
+                  location: prev.location || clockInReq.location
+                };
+              }
+              // Otherwise, use the request data
+              return clockInReq;
+            });
             setShowClockOutButton(true);
           }
           if (clockInReq.status === 'rejected' && clockInReq.rejections?.length > 0) {
@@ -216,13 +285,24 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
         checkExistingRecordsOnce();
       }
     );
+    
+    // Store unsubscribe function in ref
+    unsubscribeRequestsRef.current = unsubscribe;
 
-    // Cleanup listeners on unmount or date change
+    // Cleanup listeners only when date changes or modal closes (handled in early return)
     return () => {
-      console.log('🧹 Cleaning up real-time listeners for date:', dateStr);
-      unsubscribe();
-      if (unsubscribeRecords) {
-        unsubscribeRecords();
+      // Only cleanup if date actually changed (will be handled by dateChanged check above)
+      // This prevents cleanup on re-renders when date hasn't changed
+      if (currentDateRef.current !== dateStr) {
+        console.log('🧹 Cleaning up real-time listeners for date change:', dateStr);
+        if (unsubscribeRequestsRef.current) {
+          unsubscribeRequestsRef.current();
+          unsubscribeRequestsRef.current = null;
+        }
+        if (unsubscribeRecordsRef.current) {
+          unsubscribeRecordsRef.current();
+          unsubscribeRecordsRef.current = null;
+        }
       }
     };
   }, [isOpen, user?.uid, date]);
@@ -566,7 +646,7 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
           countryCode: location.countryCode || '',
           postcode: location.postcode || ''
         },
-        approvedBy: isNonTrainingTask ? 'system' : user.uid, // Auto-approved for non-training, trainer for training
+        approvedBy: user.uid, // Clock-out is always self-approved by trainer (no PM/Admin approval needed)
         approvedAt: Timestamp.now()
       };
 
@@ -590,7 +670,7 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
           },
           status: 'active',
           isNonTraining: isNonTrainingTask,
-          requiresApproval: !isNonTrainingTask,
+          requiresApproval: !isNonTrainingTask, // Clock-in may require approval, but clock-out doesn't
           taskId: tasks.length > 0 ? tasks[0].id : null,
           taskType: currentTask?.taskType || null
         };
@@ -620,10 +700,12 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
             status: 'completed'
           };
           
+          // Clock-out never requires approval
+          updateData.requiresApproval = false;
+          
           // If it's a non-training task, ensure flags are set
           if (isNonTrainingTask) {
             updateData.isNonTraining = true;
-            updateData.requiresApproval = false;
           }
           
           const result = await updateClockRecord(yesterdayRecord.recordId, updateData);
@@ -656,13 +738,13 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
         // Update record with clock-out, preserving non-training flags if they exist
         const updateData = {
           clockOut: clockOutData,
-          status: 'completed'
+          status: 'completed',
+          requiresApproval: false // Clock-out never requires approval
         };
         
         // If it's a non-training task, ensure flags are set
         if (isNonTrainingTask) {
           updateData.isNonTraining = true;
-          updateData.requiresApproval = false;
         }
         
         const result = await updateClockRecord(existingRecord.recordId, updateData);
@@ -699,7 +781,7 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
           clockOut: clockOutData,
           status: clockInData ? 'completed' : 'active',
           isNonTraining: isNonTrainingTask,
-          requiresApproval: !isNonTrainingTask,
+          requiresApproval: false, // Clock-out never requires approval
           taskId: tasks.length > 0 ? tasks[0].id : null,
           taskType: currentTask?.taskType || (isNonTrainingTask ? 'Non-Training Task' : null)
         };
@@ -834,80 +916,108 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
             {/* Tasks List */}
             {tasks.length > 0 ? (
               <div className="space-y-3">
-                {tasks.map((task, index) => (
-                  <div key={index} className="bg-slate-50 rounded-lg p-3.5 border border-slate-200">
-                    {/* Task Type Badge */}
-                    <div className="flex items-center gap-2 mb-2.5">
-                      {task.type === 'training' ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">
-                          <BookOpen className="h-3 w-3 mr-1" />
-                          Training Session
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700">
-                          <Briefcase className="h-3 w-3 mr-1" />
-                          Non-Training Task
-                        </span>
-                      )}
-                    </div>
+                {tasks.map((task, index) => {
+                  // Determine task type: check explicit type first, then infer from fields
+                  const isTraining = task.type === 'training' || 
+                    (task.type !== 'non-training' && (task.course || task.client));
+                  const isNonTraining = task.type === 'non-training' || 
+                    (task.type !== 'training' && (task.taskDetails || task.taskType));
+                  
+                  // Use explicit type if available, otherwise infer
+                  const taskType = task.type || (isTraining ? 'training' : (isNonTraining ? 'non-training' : 'unknown'));
+                  
+                  return (
+                    <div key={index} className="bg-slate-50 rounded-lg p-3.5 border border-slate-200">
+                      {/* Task Type Badge */}
+                      <div className="flex items-center gap-2 mb-2.5">
+                        {taskType === 'training' ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">
+                            <BookOpen className="h-3 w-3 mr-1" />
+                            Training Session
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700">
+                            <Briefcase className="h-3 w-3 mr-1" />
+                            Non-Training Task
+                          </span>
+                        )}
+                      </div>
 
-                    {/* Task Details - Compact Grid */}
-                    <div className="space-y-2">
-                      {task.type === 'training' ? (
-                        <>
-                          <div className="flex items-center gap-2">
-                            <BookOpen className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                            <div className="flex-1 min-w-0">
-                              <span className="text-[11px] text-slate-500">Course</span>
-                              <p className="text-sm font-semibold text-slate-800 leading-tight">{task.course}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                            <div className="flex-1 min-w-0">
-                              <span className="text-[11px] text-slate-500">Client</span>
-                              <p className="text-sm text-slate-700 leading-tight truncate">{task.client}</p>
-                            </div>
-                          </div>
-                          {task.role && (
-                            <div className="flex items-center gap-2">
-                              <User className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                              <div className="flex-1 min-w-0">
-                                <span className="text-[11px] text-slate-500">Role</span>
-                                <p className="text-sm text-slate-700 leading-tight">{task.role}</p>
+                      {/* Task Details - Compact Grid */}
+                      <div className="space-y-2">
+                        {taskType === 'training' ? (
+                          <>
+                            {task.course && (
+                              <div className="flex items-center gap-2">
+                                <BookOpen className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-[11px] text-slate-500">Course</span>
+                                  <p className="text-sm font-semibold text-slate-800 leading-tight">{task.course}</p>
+                                </div>
                               </div>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex items-center gap-2">
-                            <FileText className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                            <div className="flex-1 min-w-0">
-                              <span className="text-[11px] text-slate-500">Task Details</span>
-                              <p className="text-sm font-semibold text-slate-800 leading-tight">{task.taskDetails}</p>
-                            </div>
-                          </div>
-                          {task.taskType && (
-                            <div className="flex items-center gap-2">
-                              <Briefcase className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                              <div className="flex-1 min-w-0">
-                                <span className="text-[11px] text-slate-500">Task Type</span>
-                                <p className="text-sm text-slate-700 leading-tight">{task.taskType}</p>
+                            )}
+                            {task.client && (
+                              <div className="flex items-center gap-2">
+                                <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-[11px] text-slate-500">Client</span>
+                                  <p className="text-sm text-slate-700 leading-tight truncate">{task.client}</p>
+                                </div>
                               </div>
-                            </div>
-                          )}
-                        </>
-                      )}
-                      {task.description && (
-                        <div className="pt-2 mt-2 border-t border-slate-200">
-                          <span className="text-[11px] text-slate-500 block mb-1">Description</span>
-                          <p className="text-xs text-slate-600 leading-relaxed">{task.description}</p>
-                        </div>
-                      )}
+                            )}
+                            {task.role && (
+                              <div className="flex items-center gap-2">
+                                <User className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-[11px] text-slate-500">Role</span>
+                                  <p className="text-sm text-slate-700 leading-tight">{task.role}</p>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            {task.taskDetails && (
+                              <div className="flex items-center gap-2">
+                                <FileText className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-[11px] text-slate-500">Task Details</span>
+                                  <p className="text-sm font-semibold text-slate-800 leading-tight">{task.taskDetails}</p>
+                                </div>
+                              </div>
+                            )}
+                            {task.taskType && (
+                              <div className="flex items-center gap-2">
+                                <Briefcase className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-[11px] text-slate-500">Task Type</span>
+                                  <p className="text-sm text-slate-700 leading-tight">{task.taskType}</p>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
+                        {task.description && (
+                          <div className="pt-2 mt-2 border-t border-slate-200">
+                            <span className="text-[11px] text-slate-500 block mb-1">Description</span>
+                            <p className="text-xs text-slate-600 leading-relaxed">{task.description}</p>
+                          </div>
+                        )}
+                        {/* Show additional fields if available */}
+                        {task.startDate && (
+                          <div className="pt-2 mt-2 border-t border-slate-200">
+                            <span className="text-[11px] text-slate-500 block mb-1">Date Range</span>
+                            <p className="text-xs text-slate-600 leading-relaxed">
+                              {task.startDate === task.endDate || !task.endDate
+                                ? task.startDate
+                                : `${task.startDate} to ${task.endDate}`}
+                            </p>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div className="text-center py-8">
@@ -943,16 +1053,38 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
                 <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-200">
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Clock In</span>
-                    {clockInStatus === 'approved' && clockInData?.timestamp && (
+                    {clockInStatus === 'approved' && (clockInData?.requestedAt || requestedAt) && (
                       <span className="text-[11px] font-semibold text-green-600">
-                        {clockInData.timestamp?.toDate 
-                          ? formatTimestamp(clockInData.timestamp.toDate(), 'hh:mm a')
-                          : clockInData.timestamp 
-                          ? formatTimestamp(new Date(clockInData.timestamp), 'hh:mm a')
-                          : 'N/A'}
+                        {(() => {
+                          // Always show requestedAt (original request time) - never show timestamp from clock_records
+                          const timeToShow = clockInData?.requestedAt || requestedAt;
+                          if (timeToShow) {
+                            if (timeToShow?.toDate) {
+                              return formatTimestamp(timeToShow.toDate(), 'hh:mm a');
+                            } else if (timeToShow instanceof Date) {
+                              return formatTimestamp(timeToShow, 'hh:mm a');
+                            } else {
+                              return formatTimestamp(new Date(timeToShow), 'hh:mm a');
+                            }
+                          }
+                          return 'N/A';
+                        })()}
                       </span>
                     )}
-                    {clockInStatus === 'pending' && (
+                    {clockInStatus === 'pending' && clockInData?.requestedAt && (
+                      <span className="text-[11px] font-semibold text-orange-600">
+                        Pending Approval
+                        {(() => {
+                          if (clockInData.requestedAt?.toDate) {
+                            return ` (${formatTimestamp(clockInData.requestedAt.toDate(), 'hh:mm a')})`;
+                          } else if (clockInData.requestedAt) {
+                            return ` (${formatTimestamp(new Date(clockInData.requestedAt), 'hh:mm a')})`;
+                          }
+                          return '';
+                        })()}
+                      </span>
+                    )}
+                    {clockInStatus === 'pending' && !clockInData?.requestedAt && (
                       <span className="text-[11px] font-semibold text-orange-600">Pending Approval</span>
                     )}
                     {!clockInStatus && (
@@ -1012,45 +1144,47 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
                 </div>
               </div>
 
-              {/* Clock-in/out Buttons */}
-              <div className="space-y-3">
-                <Button
-                  onClick={handleClockIn}
-                  disabled={isClockingIn || clockInStatus === 'approved' || clockInStatus === 'pending' || clockInStatus === 'rejected'}
-                  size="sm"
-                  className={`w-full ${
-                    clockInStatus === 'approved'
-                      ? 'bg-green-600 hover:bg-green-600'
-                      : clockInStatus === 'pending'
-                      ? 'bg-orange-500 hover:bg-orange-500'
-                      : clockInStatus === 'rejected'
-                      ? 'bg-gray-400 hover:bg-gray-400'
-                      : 'bg-[#5A5A5A] hover:bg-[#3D3D3D]'
-                  }`}
-                >
-                  {getClockInButtonContent()}
-                </Button>
+              {/* Clock-in/out Buttons - Only show if showClockButtons is true */}
+              {showClockButtons && (
+                <div className="space-y-3">
+                  <Button
+                    onClick={handleClockIn}
+                    disabled={isClockingIn || clockInStatus === 'approved' || clockInStatus === 'pending' || clockInStatus === 'rejected'}
+                    size="sm"
+                    className={`w-full ${
+                      clockInStatus === 'approved'
+                        ? 'bg-green-600 hover:bg-green-600'
+                        : clockInStatus === 'pending'
+                        ? 'bg-orange-500 hover:bg-orange-500'
+                        : clockInStatus === 'rejected'
+                        ? 'bg-gray-400 hover:bg-gray-400'
+                        : 'bg-[#5A5A5A] hover:bg-[#3D3D3D]'
+                    }`}
+                  >
+                    {getClockInButtonContent()}
+                  </Button>
 
-                {/* Clock Out Section - Show with delay if pending, immediately if approved */}
-                {showClockActions && showClockOutButton && (clockInStatus === 'pending' || clockInStatus === 'approved') && clockOutStatus !== 'approved' && (
-                  <div className="space-y-2">
-                    {/* Instructional Note */}
-                    <p className="text-xs text-slate-500 italic text-center">
-                      💡 Clock out when your training session is complete
-                    </p>
-                    
-                    {/* Clock Out Button */}
-                    <Button
-                      onClick={handleClockOut}
-                      disabled={isClockingOut}
-                      size="sm"
-                      className="w-full bg-emerald-600 hover:bg-emerald-700"
-                    >
-                      {getClockOutButtonContent()}
-                    </Button>
-                  </div>
-                )}
-              </div>
+                  {/* Clock Out Section - Show with delay if pending, immediately if approved */}
+                  {showClockOutButton && (clockInStatus === 'pending' || clockInStatus === 'approved') && clockOutStatus !== 'approved' && (
+                    <div className="space-y-2">
+                      {/* Instructional Note */}
+                      <p className="text-xs text-slate-500 italic text-center">
+                        💡 Clock out when your training session is complete
+                      </p>
+                      
+                      {/* Clock Out Button */}
+                      <Button
+                        onClick={handleClockOut}
+                        disabled={isClockingOut}
+                        size="sm"
+                        className="w-full bg-emerald-600 hover:bg-emerald-700"
+                      >
+                        {getClockOutButtonContent()}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             )}
           </div>
