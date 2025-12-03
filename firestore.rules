@@ -36,9 +36,13 @@ service cloud.firestore {
     
     // Users collection - Only admins can create/update/delete
     match /users/{userId} {
-      // Users can read their own document
-      allow read: if request.auth != null && 
-        (request.auth.uid == userId || isAdmin());
+      // Allow all authenticated active users to read user documents
+      // This is needed for:
+      // 1. Role-based queries (getUsersByRole) used in clock request notifications
+      // 2. Program managers managing their assigned trainers
+      // 3. Routing clock requests to PMs and sending email notifications
+      // Note: User documents typically only contain non-sensitive data (email, displayName, role, status)
+      allow read: if request.auth != null && isUserActive();
       
       // Only admins can create/update users
       allow create: if isAdmin() && isUserActive();

@@ -57,39 +57,39 @@ export const saveScheduleData = async (data) => {
     const savePromises = Object.entries(groupedByMonth).map(async ([monthKey, monthData]) => {
       const scheduleRef = doc(db, 'schedules', monthKey);
       
-      try {
-        const existingSnap = await getDoc(scheduleRef);
-        const docExists = existingSnap.exists();
-        const beforeData = docExists ? existingSnap.data()?.data || {} : {};
+  try {
+    const existingSnap = await getDoc(scheduleRef);
+    const docExists = existingSnap.exists();
+    const beforeData = docExists ? existingSnap.data()?.data || {} : {};
 
-        if (!docExists) {
+    if (!docExists) {
           await setDoc(scheduleRef, { data: monthData });
-          return;
-        }
+      return;
+    }
 
-        const updates = {};
+    const updates = {};
         const nextData = monthData || {};
 
         // Check for changes
-        Object.entries(nextData).forEach(([dateKey, entries]) => {
-          const beforeEntries = beforeData?.[dateKey];
-          if (!beforeEntries || !deepEqual(beforeEntries, entries)) {
-            updates[`data.${dateKey}`] = entries;
-          }
-        });
+    Object.entries(nextData).forEach(([dateKey, entries]) => {
+      const beforeEntries = beforeData?.[dateKey];
+      if (!beforeEntries || !deepEqual(beforeEntries, entries)) {
+        updates[`data.${dateKey}`] = entries;
+      }
+    });
 
         // Check for deletions
-        Object.keys(beforeData || {}).forEach((dateKey) => {
-          if (!Object.prototype.hasOwnProperty.call(nextData, dateKey)) {
-            updates[`data.${dateKey}`] = deleteField();
-          }
-        });
+    Object.keys(beforeData || {}).forEach((dateKey) => {
+      if (!Object.prototype.hasOwnProperty.call(nextData, dateKey)) {
+        updates[`data.${dateKey}`] = deleteField();
+      }
+    });
 
-        if (Object.keys(updates).length === 0) {
+    if (Object.keys(updates).length === 0) {
           return; // No changes
-        }
+    }
 
-        await updateDoc(scheduleRef, updates);
+    await updateDoc(scheduleRef, updates);
       } catch (error) {
         console.error(`Error saving schedule data for month ${monthKey}:`, error);
         if (error?.code === 'not-found') {
@@ -184,25 +184,25 @@ export const subscribeToScheduleUpdates = (callback) => {
         
         // Set up listener for this month document
         const monthRef = doc(db, 'schedules', docId);
-        const unsubscribe = onSnapshot(
+  const unsubscribe = onSnapshot(
           monthRef,
-          (docSnapshot) => {
-            try {
-              if (docSnapshot.exists()) {
-                const data = docSnapshot.data();
+    (docSnapshot) => {
+      try {
+        if (docSnapshot.exists()) {
+          const data = docSnapshot.data();
                 monthListeners.set(docId, data?.data || {});
-              } else {
+        } else {
                 monthListeners.delete(docId);
-              }
+        }
               mergeAndCallback();
-            } catch (error) {
+      } catch (error) {
               console.error(`Error processing schedule data for ${docId}:`, error);
-            }
-          },
-          (error) => {
-            if (error.code !== 'permission-denied') {
+      }
+    },
+    (error) => {
+      if (error.code !== 'permission-denied') {
               console.error(`Error in schedule subscription for ${docId}:`, error);
-            }
+      }
           }
         );
         unsubscribes.push(unsubscribe);

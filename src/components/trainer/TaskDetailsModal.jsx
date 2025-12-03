@@ -45,11 +45,11 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
           unsubscribeRecordsRef.current();
           unsubscribeRecordsRef.current = null;
         }
-        setClockInStatus(null);
-        setClockOutStatus(null);
-        setClockInData(null);
-        setClockOutData(null);
-        setRejectionReason(null);
+      setClockInStatus(null);
+      setClockOutStatus(null);
+      setClockInData(null);
+      setClockOutData(null);
+      setRejectionReason(null);
         setRequestedAt(null);
         currentDateRef.current = null;
       }
@@ -65,11 +65,11 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
       console.log('🔍 Setting up real-time listener for date:', dateStr, '(date changed)');
       currentDateRef.current = dateStr;
       // Reset states only when date changes
-      setClockInStatus(null);
-      setClockOutStatus(null);
-      setClockInData(null);
-      setClockOutData(null);
-      setRejectionReason(null);
+    setClockInStatus(null);
+    setClockOutStatus(null);
+    setClockInData(null);
+    setClockOutData(null);
+    setRejectionReason(null);
       setRequestedAt(null);
     } else {
       // Date hasn't changed - listeners are already active, don't reset states or re-setup
@@ -247,8 +247,8 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
           }
           
           if (clockInReq.status === 'pending' || clockInReq.status === 'rejected') {
-            setClockInStatus(clockInReq.status);
-            setClockInData(clockInReq);
+          setClockInStatus(clockInReq.status);
+          setClockInData(clockInReq);
           } else if (clockInReq.status === 'approved') {
             // For approved requests, update status but preserve requestedAt
             setClockInStatus(clockInReq.status);
@@ -285,7 +285,7 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
         checkExistingRecordsOnce();
       }
     );
-    
+
     // Store unsubscribe function in ref
     unsubscribeRequestsRef.current = unsubscribe;
 
@@ -927,82 +927,82 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
                   const taskType = task.type || (isTraining ? 'training' : (isNonTraining ? 'non-training' : 'unknown'));
                   
                   return (
-                    <div key={index} className="bg-slate-50 rounded-lg p-3.5 border border-slate-200">
-                      {/* Task Type Badge */}
-                      <div className="flex items-center gap-2 mb-2.5">
+                  <div key={index} className="bg-slate-50 rounded-lg p-3.5 border border-slate-200">
+                    {/* Task Type Badge */}
+                    <div className="flex items-center gap-2 mb-2.5">
                         {taskType === 'training' ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">
-                            <BookOpen className="h-3 w-3 mr-1" />
-                            Training Session
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700">
-                            <Briefcase className="h-3 w-3 mr-1" />
-                            Non-Training Task
-                          </span>
-                        )}
-                      </div>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">
+                          <BookOpen className="h-3 w-3 mr-1" />
+                          Training Session
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700">
+                          <Briefcase className="h-3 w-3 mr-1" />
+                          Non-Training Task
+                        </span>
+                      )}
+                    </div>
 
-                      {/* Task Details - Compact Grid */}
-                      <div className="space-y-2">
+                    {/* Task Details - Compact Grid */}
+                    <div className="space-y-2">
                         {taskType === 'training' ? (
-                          <>
+                        <>
                             {task.course && (
-                              <div className="flex items-center gap-2">
-                                <BookOpen className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                  <span className="text-[11px] text-slate-500">Course</span>
-                                  <p className="text-sm font-semibold text-slate-800 leading-tight">{task.course}</p>
-                                </div>
-                              </div>
+                          <div className="flex items-center gap-2">
+                            <BookOpen className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-[11px] text-slate-500">Course</span>
+                              <p className="text-sm font-semibold text-slate-800 leading-tight">{task.course}</p>
+                            </div>
+                          </div>
                             )}
                             {task.client && (
-                              <div className="flex items-center gap-2">
-                                <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                  <span className="text-[11px] text-slate-500">Client</span>
-                                  <p className="text-sm text-slate-700 leading-tight truncate">{task.client}</p>
-                                </div>
-                              </div>
-                            )}
-                            {task.role && (
-                              <div className="flex items-center gap-2">
-                                <User className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                  <span className="text-[11px] text-slate-500">Role</span>
-                                  <p className="text-sm text-slate-700 leading-tight">{task.role}</p>
-                                </div>
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            {task.taskDetails && (
-                              <div className="flex items-center gap-2">
-                                <FileText className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                  <span className="text-[11px] text-slate-500">Task Details</span>
-                                  <p className="text-sm font-semibold text-slate-800 leading-tight">{task.taskDetails}</p>
-                                </div>
-                              </div>
-                            )}
-                            {task.taskType && (
-                              <div className="flex items-center gap-2">
-                                <Briefcase className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                  <span className="text-[11px] text-slate-500">Task Type</span>
-                                  <p className="text-sm text-slate-700 leading-tight">{task.taskType}</p>
-                                </div>
-                              </div>
-                            )}
-                          </>
-                        )}
-                        {task.description && (
-                          <div className="pt-2 mt-2 border-t border-slate-200">
-                            <span className="text-[11px] text-slate-500 block mb-1">Description</span>
-                            <p className="text-xs text-slate-600 leading-relaxed">{task.description}</p>
+                          <div className="flex items-center gap-2">
+                            <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-[11px] text-slate-500">Client</span>
+                              <p className="text-sm text-slate-700 leading-tight truncate">{task.client}</p>
+                            </div>
                           </div>
-                        )}
+                            )}
+                          {task.role && (
+                            <div className="flex items-center gap-2">
+                              <User className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <span className="text-[11px] text-slate-500">Role</span>
+                                <p className="text-sm text-slate-700 leading-tight">{task.role}</p>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                            {task.taskDetails && (
+                          <div className="flex items-center gap-2">
+                            <FileText className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-[11px] text-slate-500">Task Details</span>
+                              <p className="text-sm font-semibold text-slate-800 leading-tight">{task.taskDetails}</p>
+                            </div>
+                          </div>
+                            )}
+                          {task.taskType && (
+                            <div className="flex items-center gap-2">
+                              <Briefcase className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <span className="text-[11px] text-slate-500">Task Type</span>
+                                <p className="text-sm text-slate-700 leading-tight">{task.taskType}</p>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {task.description && (
+                        <div className="pt-2 mt-2 border-t border-slate-200">
+                          <span className="text-[11px] text-slate-500 block mb-1">Description</span>
+                          <p className="text-xs text-slate-600 leading-relaxed">{task.description}</p>
+                        </div>
+                      )}
                         {/* Show additional fields if available */}
                         {task.startDate && (
                           <div className="pt-2 mt-2 border-t border-slate-200">
@@ -1012,9 +1012,9 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
                                 ? task.startDate
                                 : `${task.startDate} to ${task.endDate}`}
                             </p>
-                          </div>
+                    </div>
                         )}
-                      </div>
+                  </div>
                     </div>
                   );
                 })}
@@ -1146,44 +1146,44 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
 
               {/* Clock-in/out Buttons - Only show if showClockButtons is true */}
               {showClockButtons && (
-                <div className="space-y-3">
-                  <Button
-                    onClick={handleClockIn}
-                    disabled={isClockingIn || clockInStatus === 'approved' || clockInStatus === 'pending' || clockInStatus === 'rejected'}
-                    size="sm"
-                    className={`w-full ${
-                      clockInStatus === 'approved'
-                        ? 'bg-green-600 hover:bg-green-600'
-                        : clockInStatus === 'pending'
-                        ? 'bg-orange-500 hover:bg-orange-500'
-                        : clockInStatus === 'rejected'
-                        ? 'bg-gray-400 hover:bg-gray-400'
-                        : 'bg-[#5A5A5A] hover:bg-[#3D3D3D]'
-                    }`}
-                  >
-                    {getClockInButtonContent()}
-                  </Button>
+              <div className="space-y-3">
+                <Button
+                  onClick={handleClockIn}
+                  disabled={isClockingIn || clockInStatus === 'approved' || clockInStatus === 'pending' || clockInStatus === 'rejected'}
+                  size="sm"
+                  className={`w-full ${
+                    clockInStatus === 'approved'
+                      ? 'bg-green-600 hover:bg-green-600'
+                      : clockInStatus === 'pending'
+                      ? 'bg-orange-500 hover:bg-orange-500'
+                      : clockInStatus === 'rejected'
+                      ? 'bg-gray-400 hover:bg-gray-400'
+                      : 'bg-[#5A5A5A] hover:bg-[#3D3D3D]'
+                  }`}
+                >
+                  {getClockInButtonContent()}
+                </Button>
 
-                  {/* Clock Out Section - Show with delay if pending, immediately if approved */}
+                {/* Clock Out Section - Show with delay if pending, immediately if approved */}
                   {showClockOutButton && (clockInStatus === 'pending' || clockInStatus === 'approved') && clockOutStatus !== 'approved' && (
-                    <div className="space-y-2">
-                      {/* Instructional Note */}
-                      <p className="text-xs text-slate-500 italic text-center">
-                        💡 Clock out when your training session is complete
-                      </p>
-                      
-                      {/* Clock Out Button */}
-                      <Button
-                        onClick={handleClockOut}
-                        disabled={isClockingOut}
-                        size="sm"
-                        className="w-full bg-emerald-600 hover:bg-emerald-700"
-                      >
-                        {getClockOutButtonContent()}
-                      </Button>
-                    </div>
-                  )}
-                </div>
+                  <div className="space-y-2">
+                    {/* Instructional Note */}
+                    <p className="text-xs text-slate-500 italic text-center">
+                      💡 Clock out when your training session is complete
+                    </p>
+                    
+                    {/* Clock Out Button */}
+                    <Button
+                      onClick={handleClockOut}
+                      disabled={isClockingOut}
+                      size="sm"
+                      className="w-full bg-emerald-600 hover:bg-emerald-700"
+                    >
+                      {getClockOutButtonContent()}
+                    </Button>
+                  </div>
+                )}
+              </div>
               )}
             </div>
             )}
