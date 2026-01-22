@@ -303,7 +303,7 @@ Views personal schedules, clocks in/out for training sessions, and manages their
 - **Build**: `npm run build` generates production build in `dist/` folder
 - **Firebase Hosting**: Configured for Firebase deployment
 - **Environment Variables**: Required environment variables:
-  - `VITE_EMAIL_API_URL`: NodeMailer API endpoint (e.g., `https://nodemailer-q13k.onrender.com/send`)
+  - `VITE_EMAIL_API_URL`: NodeMailer API endpoint (e.g., `https://nodemailer.com/send`)
   - `VITE_MAPBOX_ACCESS_TOKEN`: Mapbox access token for location services
   - Firebase configuration (typically in `src/firebase.js`)
 
@@ -322,3 +322,4 @@ Views personal schedules, clocks in/out for training sessions, and manages their
 - NodeMailer API endpoint configured via `VITE_EMAIL_API_URL` environment variable
 - Mapbox access token for location services (optional, if using location features)
 
+# traiops
