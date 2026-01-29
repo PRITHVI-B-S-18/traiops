@@ -60,7 +60,7 @@ const scheduleWizardSteps = [
   {
     key: 'type',
     label: 'Task Type',
-    description: 'Choose whether this assignment is training or non-training',
+    description: 'Choose whether this assignment is training, non-training, or leave',
   },
   {
     key: 'details',
@@ -783,6 +783,13 @@ const SchedulePage = () => {
       }
       return false;
     });
+    let leaveTrainers = trainersForDate.filter(entry => {
+      if (entry.type === 'leave') {
+        assignedTrainers.add(entry.trainer);
+        return matchesSearch(entry);
+      }
+      return false;
+    });
     let availableTrainers = [
       ...activeTrainers.filter(trainer => !assignedTrainers.has(trainer.name) && matchesSearch(trainer)),
       ...trainersForDate.filter(entry => 
@@ -797,17 +804,25 @@ const SchedulePage = () => {
     // Filter by section type
     if (filterType === 'training') {
       nonTrainingTrainers = [];
+      leaveTrainers = [];
       availableTrainers = [];
     } else if (filterType === 'non-training') {
       trainingTrainers = [];
+      leaveTrainers = [];
+      availableTrainers = [];
+    } else if (filterType === 'leave') {
+      trainingTrainers = [];
+      nonTrainingTrainers = [];
       availableTrainers = [];
     } else if (filterType === 'available') {
       trainingTrainers = [];
       nonTrainingTrainers = [];
+      leaveTrainers = [];
     }
     return {
       trainingTrainers,
       nonTrainingTrainers,
+      leaveTrainers,
       availableTrainers
     };
   }, [flattenedScheduleData, matchesSearch, activeTrainers, filterType]);
@@ -817,6 +832,7 @@ const SchedulePage = () => {
       return {
         trainingTrainers: [],
         nonTrainingTrainers: [],
+        leaveTrainers: [],
         availableTrainers: []
       };
     }
@@ -1045,9 +1061,10 @@ const SchedulePage = () => {
         if (sendEmailOnUpdate) {
           if (finalEditingForm.type === 'training') {
             await notifyScheduleUpdated(sampleEntry);
-          } else {
+          } else if (finalEditingForm.type === 'non-training') {
             await notifyNonTrainingUpdated(sampleEntry);
           }
+          // Leave: no email
         }
       } else {
         // For single day updates
@@ -1068,22 +1085,17 @@ const SchedulePage = () => {
           taskDetails: finalEditingForm.taskDetails || 'N/A',
           taskType: finalEditingForm.taskType || 'N/A',
           description: finalEditingForm.description || 'N/A',
-          excludedDates: []
+          excludedDates: [],
+          type: finalEditingForm.type
         };
-        
-        // Use the actual type from finalEditingForm since originalTaskType might be null
-        console.log('Email notification debug:', {
-          finalEditingFormType: finalEditingForm.type,
-          updatedEntry,
-          willSendTrainingEmail: finalEditingForm.type === 'training'
-        });
         
         if (sendEmailOnUpdate) {
           if (finalEditingForm.type === 'training') {
             await notifyScheduleUpdated(updatedEntry);
-          } else {
+          } else if (finalEditingForm.type === 'non-training') {
             await notifyNonTrainingUpdated(updatedEntry);
           }
+          // Leave: no email
         }
       }
       
@@ -1189,6 +1201,16 @@ const SchedulePage = () => {
         excludedDates: selectedDateRange.excludedDates || [],
         // Use selected PMs (not all PMs of client)
         assignedPMIds: selectedPMs
+      };
+    } else if (scheduleType === 'leave') {
+      newEntry = {
+        startDate: selectedDateRange.startDate,
+        endDate: selectedDateRange.endDate,
+        trainer: trainerName,
+        description: form.leaveDescription?.value || '',
+        type: 'leave',
+        id: Date.now(),
+        excludedDates: selectedDateRange.excludedDates || []
       };
     } else {
       newEntry = {
@@ -1318,8 +1340,8 @@ const SchedulePage = () => {
       });
     });
     
-    // Send email notification for the first date as an example (only if enabled)
-    if (sendEmailOnCreate) {
+    // Send email notification for the first date as an example (only if enabled; leave has no email)
+    if (sendEmailOnCreate && (scheduleType === 'training' || scheduleType === 'non-training')) {
       try {
         const sampleEntry = {
           trainer: trainerName,
@@ -1333,7 +1355,6 @@ const SchedulePage = () => {
           description: form.description?.value || 'N/A',
           excludedDates: selectedDateRange.excludedDates || []
         };
-        
         if (scheduleType === 'training') {
           await notifyScheduleCreated(sampleEntry);
         } else {
@@ -1395,7 +1416,9 @@ const SchedulePage = () => {
                 className={`rounded-lg p-4 ${
                   event.type === 'training' 
                     ? 'bg-blue-50 border border-blue-200' 
-                    : 'bg-orange-50 border border-orange-200'
+                    : event.type === 'leave'
+                    ? 'bg-red-50 border border-red-200'
+                    : 'bg-orange-100 border border-orange-300'
                 }`}
               >
                 <div className="flex justify-between items-start">
@@ -1407,6 +1430,11 @@ const SchedulePage = () => {
                         <p className="text-sm text-gray-600">Client: {event.client}</p>
                         <p className="text-sm text-gray-600">Role: {event.role}</p>
                         <p className="text-sm text-gray-600">Description: {event.description}</p>
+                      </>
+                    ) : event.type === 'leave' ? (
+                      <>
+                        <p className="text-sm font-medium text-red-700">Leave</p>
+                        <p className="text-sm text-gray-600">Reason: {event.description || '—'}</p>
                       </>
                     ) : (
                       <>
@@ -1457,8 +1485,10 @@ const SchedulePage = () => {
     const eventsByDate = {};
     Object.entries(scheduleData).forEach(([date, entries]) => {
       entries.forEach(entry => {
-        // Skip entries with "Not Alloted"
-        if (entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted') {
+        // Skip entries with "Not Alloted" (leave entries have no client/course/role; include them)
+        if (entry.type !== 'leave' && (
+          entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted'
+        )) {
           return;
         }
         // For range events, add to each day in the range
@@ -1510,9 +1540,9 @@ const SchedulePage = () => {
                     <div
                       key={i}
                       className={`rounded px-2 py-1 text-xs font-semibold flex items-center gap-1 shadow-sm ${
-                        event.type === 'training' ? 'bg-blue-500 text-white' : 'bg-orange-500 text-white'
+                        event.type === 'training' ? 'bg-blue-500 text-white' : event.type === 'leave' ? 'bg-red-500 text-white' : 'bg-orange-400 text-white'
                       }`}
-                      title={`${event.type === 'training' ? 'Training' : 'Non-Training'}: ${event.course || event.taskDetails || event.task || ''}`}
+                      title={`${event.type === 'training' ? 'Training' : event.type === 'leave' ? 'Leave' : 'Non-Training'}: ${event.type === 'leave' ? (event.description || '') : (event.course || event.taskDetails || event.task || '')}`}
                     >
                       <span className="truncate max-w-[90px]">
                         {event.trainer}
@@ -1631,13 +1661,17 @@ const SchedulePage = () => {
       // Case 2: Partial overlap (some dates conflict, some are free)
       const conflictingSampleTask = Object.values(existingTasksForTrainer)[0];
       const isSameTaskType = scheduleType === conflictingSampleTask?.type;
-      const canExtendTask = isSameTaskType && scheduleType === 'training' 
-        ? (form.client.value === conflictingSampleTask.client && 
-           form.course.value === conflictingSampleTask.course && 
-           form.role.value === conflictingSampleTask.role)
-        : (scheduleType === 'non-training' && 
-           form.taskDetails.value === conflictingSampleTask.taskDetails && 
-           form.taskType.value === conflictingSampleTask.taskType);
+      const canExtendTask = isSameTaskType && (
+        scheduleType === 'training' 
+          ? (form.client.value === conflictingSampleTask.client && 
+             form.course.value === conflictingSampleTask.course && 
+             form.role.value === conflictingSampleTask.role)
+          : scheduleType === 'leave'
+          ? true
+          : (scheduleType === 'non-training' && 
+             form.taskDetails.value === conflictingSampleTask.taskDetails && 
+             form.taskType.value === conflictingSampleTask.taskType)
+      );
 
       let userChoice;
       if (canExtendTask && freeDates.length > 0) {
@@ -1783,6 +1817,15 @@ const SchedulePage = () => {
           // Use selected PMs (not all PMs of client)
           assignedPMIds: selectedPMs
         };
+      } else if (scheduleType === 'leave') {
+        newEntry = {
+          startDate: date,
+          endDate: date,
+          trainer: trainerName,
+          description: form.leaveDescription?.value || '',
+          type: 'leave',
+          id: Date.now() + Math.random()
+        };
       } else {
         newEntry = {
           startDate: date,
@@ -1813,12 +1856,10 @@ const SchedulePage = () => {
       });
     });
     
-    // Send email notifications for successful allocations (only if enabled)
-    if (conflicts.length === 0 && sendEmailOnCreate) {
+    // Send email notifications for successful allocations (only if enabled; leave has no email)
+    if (conflicts.length === 0 && sendEmailOnCreate && (scheduleType === 'training' || scheduleType === 'non-training')) {
       try {
-        // Send notification for the first date as an example
         let sampleEntry;
-        
         if (scheduleType === 'training') {
           const client = clientsWithPMs.find(c => c.clientId === selectedClient);
           const clientNameForEmail = client?.name || resolveClientName(selectedClient);
@@ -1845,7 +1886,6 @@ const SchedulePage = () => {
           };
           await notifyNonTrainingCreated(sampleEntry);
         }
-        
         toast({ 
           title: 'Success', 
           description: `New schedule allocated successfully for ${trainerName} on ${dates.length} date(s) and email notification sent.` 
@@ -1938,8 +1978,8 @@ const SchedulePage = () => {
         console.error('⚠️ Failed to cancel pending clock requests for deleted task:', requestError);
       }
       
-          // Send email notification for deletion (only if enabled)
-    if (sendEmailOnDelete) {
+          // Send email notification for deletion (only if enabled; leave has no email)
+    if (sendEmailOnDelete && (entry.type === 'training' || entry.type === 'non-training')) {
       try {
         if (entry.type === 'training') {
           await notifyScheduleDeleted(entry);
@@ -1966,11 +2006,6 @@ const SchedulePage = () => {
         variant: "default"
       });
     }
-      
-      // Update the selected date trainers list if we're on that date
-      if (selectedDate) {
-        setTrainersOnSelectedDate((newScheduleData[selectedDate] || []));
-      }
     } catch (error) {
       console.error('Error saving deleted data:', error);
       toast({ 
@@ -2128,7 +2163,7 @@ const SchedulePage = () => {
             <select
               id="export-format"
               name="export-format"
-              value={exportFilters.format}
+              value={exportFilters.format ?? ''}
               onChange={(e) => setExportFilters(f => ({ ...f, format: e.target.value }))}
               className="w-full p-2 border border-border/50 rounded-md bg-muted/5"
             >
@@ -2144,7 +2179,7 @@ const SchedulePage = () => {
             <select 
               id="export-date-range"
               name="export-date-range"
-              value={exportFilters.dateRange}
+              value={exportFilters.dateRange ?? ''}
               onChange={(e) => setExportFilters(f => ({ ...f, dateRange: e.target.value }))}
               className="w-full p-2 border border-border/50 rounded-md bg-muted/5"
             >
@@ -2180,7 +2215,7 @@ const SchedulePage = () => {
                   id="export-custom-start-date"
                   name="export-custom-start-date"
                   type="date" 
-                  value={exportFilters.customStartDate}
+                  value={exportFilters.customStartDate ?? ''}
                   onChange={(e) => setExportFilters(f => ({ ...f, customStartDate: e.target.value }))}
                   className="w-full p-2 border border-border/50 rounded-md bg-muted/5"
                 />
@@ -2191,7 +2226,7 @@ const SchedulePage = () => {
                   id="export-custom-end-date"
                   name="export-custom-end-date"
                   type="date" 
-                  value={exportFilters.customEndDate}
+                  value={exportFilters.customEndDate ?? ''}
                   onChange={(e) => setExportFilters(f => ({ ...f, customEndDate: e.target.value }))}
                   className="w-full p-2 border border-border/50 rounded-md bg-muted/5"
                 />
@@ -2407,7 +2442,7 @@ const SchedulePage = () => {
         if (trainerFilter.size > 0 && !trainerFilter.has(entry.trainer)) return false;
         if (!matchesDateRange(entry)) return false;
         if (!includeTraining && entry.type === 'training') return false;
-        if (!includeNonTraining && entry.type !== 'training') return false;
+        if (!includeNonTraining && (entry.type === 'non-training' || entry.type === 'leave')) return false;
         if (showOnlyScheduled) {
           const hasAssignment = !!(
             entry.client ||
@@ -2422,7 +2457,7 @@ const SchedulePage = () => {
       })
       .map((entry) => ({
         trainer: entry.trainer,
-        type: entry.type === 'training' ? 'Training' : 'Non-Training',
+        type: entry.type === 'training' ? 'Training' : entry.type === 'leave' ? 'Leave' : 'Non-Training',
         client: entry.client || '',
         course: entry.course || '',
         role: entry.role || '',
@@ -2813,8 +2848,9 @@ const SchedulePage = () => {
   const ActionIconButton = ({ onClick, label, icon: Icon, variant = 'neutral', accent = 'blue' }) => {
     const accentClassMap = {
       blue: 'text-blue-600 hover:bg-blue-100/70 focus:ring-blue-500',
-      orange: 'text-orange-600 hover:bg-orange-100/70 focus:ring-orange-500',
-      green: 'text-green-600 hover:bg-green-100/70 focus:ring-green-500'
+      orange: 'text-orange-500 hover:bg-orange-200/70 focus:ring-orange-400',
+      green: 'text-green-600 hover:bg-green-100/70 focus:ring-green-500',
+      red: 'text-red-600 hover:bg-red-100/70 focus:ring-red-500'
     };
     const base = 'inline-flex items-center justify-center rounded-full p-2 bg-white/80 shadow-sm border border-white/70 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1';
     const variantClasses = variant === 'danger'
@@ -2847,10 +2883,10 @@ const SchedulePage = () => {
       headerBg: 'bg-orange-50/70',
       cardBg: 'bg-orange-50/40',
       textPrimary: 'text-orange-900',
-      muted: 'text-orange-700/80',
-      badge: 'bg-orange-100 text-orange-700',
-      dot: 'bg-orange-500',
-      border: 'border-orange-500/40'
+      muted: 'text-orange-600/80',
+      badge: 'bg-orange-400 text-white',
+      dot: 'bg-orange-400',
+      border: 'border-orange-400/50'
     },
     green: {
       headerBg: 'bg-green-50/70',
@@ -2860,6 +2896,15 @@ const SchedulePage = () => {
       badge: 'bg-green-100 text-green-700',
       dot: 'bg-green-500',
       border: 'border-green-500/40'
+    },
+    red: {
+      headerBg: 'bg-red-50/70',
+      cardBg: 'bg-red-50/40',
+      textPrimary: 'text-red-900',
+      muted: 'text-red-700/80',
+      badge: 'bg-red-100 text-red-700',
+      dot: 'bg-red-500',
+      border: 'border-red-500/40'
     }
   };
 
@@ -2916,6 +2961,11 @@ const SchedulePage = () => {
                    {entry.role && <div className="flex items-center gap-1"><span className="text-gray-400">Role:</span><span className="font-medium text-gray-700">{entry.role}</span></div>}
                    {entry.description && <div className="text-gray-500">Notes: {entry.description}</div>}
                  </>
+               ) : section.key === 'leave' ? (
+                 <>
+                   {entry.description && <div className="text-gray-500">Reason: {entry.description}</div>}
+                   {!entry.description && <div className="text-gray-400">Leave</div>}
+                 </>
                ) : (
                  <>
                    <div className="flex items-center gap-1"><span className="text-gray-400">Task:</span><span className="font-medium text-gray-700">{entry.taskDetails}</span></div>
@@ -2947,6 +2997,7 @@ const SchedulePage = () => {
   const dailySections = useMemo(() => [
     { key: 'training', title: 'Training', items: selectedTrainerCategories.trainingTrainers, accent: 'blue' },
     { key: 'non-training', title: 'Non-Training', items: selectedTrainerCategories.nonTrainingTrainers, accent: 'orange' },
+    { key: 'leave', title: 'Leave', items: selectedTrainerCategories.leaveTrainers, accent: 'red' },
     { key: 'available', title: 'Available', items: selectedTrainerCategories.availableTrainers, accent: 'green' }
   ], [selectedTrainerCategories]);
 
@@ -2955,10 +3006,12 @@ const SchedulePage = () => {
       totalAssignments: 0,
       training: 0,
       nonTraining: 0,
+      leave: 0,
       upcoming: 0,
       activeTrainers: 0,
       trainingPercent: 0,
       nonTrainingPercent: 0,
+      leavePercent: 0,
       needsAttention: 0
     };
 
@@ -2978,6 +3031,8 @@ const SchedulePage = () => {
 
       if (entry.type === 'training') {
         summary.training += 1;
+      } else if (entry.type === 'leave') {
+        summary.leave += 1;
       } else {
         summary.nonTraining += 1;
       }
@@ -2990,22 +3045,24 @@ const SchedulePage = () => {
         }
       }
 
-      const needsAttention =
-        entry.client === 'Not Alloted' ||
-        entry.course === 'Not Alloted' ||
-        entry.role === 'Not Alloted' ||
-        entry.taskDetails === 'Not Alloted' ||
-        entry.description === 'Not Alloted';
+      const needsAttention = entry.type === 'leave'
+        ? false
+        : (entry.client === 'Not Alloted' ||
+           entry.course === 'Not Alloted' ||
+           entry.role === 'Not Alloted' ||
+           entry.taskDetails === 'Not Alloted' ||
+           entry.description === 'Not Alloted');
       if (needsAttention) {
         summary.needsAttention += 1;
       }
     });
 
-    summary.totalAssignments = summary.training + summary.nonTraining;
+    summary.totalAssignments = summary.training + summary.nonTraining + summary.leave;
     summary.activeTrainers = trainers.size;
     if (summary.totalAssignments > 0) {
       summary.trainingPercent = Math.round((summary.training / summary.totalAssignments) * 100);
       summary.nonTrainingPercent = Math.round((summary.nonTraining / summary.totalAssignments) * 100);
+      summary.leavePercent = Math.round((summary.leave / summary.totalAssignments) * 100);
     }
 
     return summary;
@@ -3030,7 +3087,7 @@ const SchedulePage = () => {
     const trainer = trainerList.find((t) => t.name === selectedTrainer);
     return {
       trainerName: trainer?.name || selectedTrainer || 'Not selected',
-      taskTypeLabel: scheduleType === 'training' ? 'Training Assignment' : 'Non-training Assignment',
+      taskTypeLabel: scheduleType === 'training' ? 'Training Assignment' : scheduleType === 'leave' ? 'Leave' : 'Non-training Assignment',
       clientName: client?.name || (selectedClient ? resolveClientName(selectedClient) : 'Not selected'),
       pmCount: selectedPMs.length,
       role,
@@ -3142,11 +3199,21 @@ const SchedulePage = () => {
         </div>
         <div className={cn(cardStyles.surface, 'flex items-center justify-between p-4 shadow-sm')}>
           <div>
-            <p className="text-xs font-medium uppercase text-orange-600">Non-Training</p>
+            <p className="text-xs font-medium uppercase text-orange-500">Non-Training</p>
             <p className="mt-1 text-2xl font-bold text-slate-900">{scheduleMetrics.nonTraining}</p>
             <p className="text-xs text-slate-400">{scheduleMetrics.nonTrainingPercent}% of workload</p>
           </div>
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-50 text-orange-600">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-100 text-orange-500">
+            <BarChart3 className="h-5 w-5" />
+          </div>
+        </div>
+        <div className={cn(cardStyles.surface, 'flex items-center justify-between p-4 shadow-sm')}>
+          <div>
+            <p className="text-xs font-medium uppercase text-red-600">Leave</p>
+            <p className="mt-1 text-2xl font-bold text-slate-900">{scheduleMetrics.leave}</p>
+            <p className="text-xs text-slate-400">{scheduleMetrics.leavePercent}% of workload</p>
+          </div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 text-red-600">
             <BarChart3 className="h-5 w-5" />
           </div>
         </div>
@@ -3220,14 +3287,18 @@ const SchedulePage = () => {
         {viewMode === 'calendar' ? (
           <>
             {/* Legend for calendar view */}
-            <div className="flex gap-6 mb-4">
+            <div className="flex flex-wrap gap-6 mb-4">
               <div className="flex items-center gap-2">
                 <span className="inline-block w-6 h-6 rounded bg-blue-500"></span>
                 <span className="text-sm">Training</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="inline-block w-6 h-6 rounded bg-orange-500"></span>
+                <span className="inline-block w-6 h-6 rounded bg-orange-400"></span>
                 <span className="text-sm">Non-Training</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-6 h-6 rounded bg-red-500"></span>
+                <span className="text-sm">Leave</span>
               </div>
             </div>
             {renderCalendar()}
@@ -3252,7 +3323,7 @@ const SchedulePage = () => {
                       <input
                         type="text"
                         placeholder="Search trainers, clients, courses, tasks..."
-                        value={searchTerm}
+                        value={searchTerm ?? ''}
                         onChange={e => setSearchTerm(e.target.value)}
                         className="pl-9 pr-8 py-2 rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-64 md:w-80 max-w-xs shadow-sm text-sm"
                       />
@@ -3448,6 +3519,17 @@ const SchedulePage = () => {
                               <input 
                                 type="radio" 
                                 name="filterType" 
+                                value="leave" 
+                                checked={filterType === 'leave'} 
+                                onChange={() => setFilterType('leave')}
+                                className="w-4 h-4 text-red-600 border-gray-300 focus:ring-red-500"
+                              /> 
+                              <span className="text-gray-700">Leave Only</span>
+                            </label>
+                            <label className="flex items-center gap-3 text-sm cursor-pointer hover:bg-gray-50 p-2 rounded-lg transition-colors">
+                              <input 
+                                type="radio" 
+                                name="filterType" 
                                 value="available" 
                                 checked={filterType === 'available'} 
                                 onChange={() => setFilterType('available')}
@@ -3489,7 +3571,8 @@ const SchedulePage = () => {
                 {(() => {
                   const allTaskIds = [
                     ...selectedTrainerCategories.trainingTrainers.map(e => e.id),
-                    ...selectedTrainerCategories.nonTrainingTrainers.map(e => e.id)
+                    ...selectedTrainerCategories.nonTrainingTrainers.map(e => e.id),
+                    ...(selectedTrainerCategories.leaveTrainers || []).map(e => e.id)
                   ];
                   const allSelected = allTaskIds.length > 0 && allTaskIds.every(id => selectedTaskIds.includes(id));
                   return (
@@ -3509,7 +3592,7 @@ const SchedulePage = () => {
                     </div>
                   );
                 })()}
-                <div className="hidden md:grid md:grid-cols-3 gap-4">
+                <div className="hidden md:grid md:grid-cols-2 lg:grid-cols-4 gap-4">
                   {dailySections.map(section => (
                     <div key={section.key} className={`flex flex-col rounded-2xl border ${accentTokens[section.accent].border} bg-white shadow-sm h-[68vh]`}>
                       <div className={`flex items-center justify-between px-4 py-3 border-b ${accentTokens[section.accent].headerBg}`}>
@@ -3664,7 +3747,7 @@ const SchedulePage = () => {
                   {/* Step 1: Task Type Selection */}
                   <div className={cn(cardStyles.surface, 'space-y-4 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
                     <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Task Type</label>
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-3 gap-3">
                       <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
                         scheduleType === 'training' 
                           ? 'border-blue-500 bg-blue-50/50 shadow-sm' 
@@ -3692,7 +3775,7 @@ const SchedulePage = () => {
                       </label>
                       <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
                         scheduleType === 'non-training' 
-                          ? 'border-orange-500 bg-orange-50/50 shadow-sm' 
+                          ? 'border-orange-400 bg-orange-100/50 shadow-sm' 
                           : 'border-gray-200 hover:border-gray-300 bg-white'
                       }`}>
                         <input 
@@ -3705,13 +3788,38 @@ const SchedulePage = () => {
                         />
                         <div className="flex items-center gap-2">
                           <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
-                            scheduleType === 'non-training' ? 'border-orange-500' : 'border-gray-300'
+                            scheduleType === 'non-training' ? 'border-orange-400' : 'border-gray-300'
                           }`}>
-                            {scheduleType === 'non-training' && <div className="w-1.5 h-1.5 bg-orange-500 rounded-full"></div>}
+                            {scheduleType === 'non-training' && <div className="w-1.5 h-1.5 bg-orange-400 rounded-full"></div>}
                           </div>
                           <div className="min-w-0">
                             <p className="font-medium text-gray-900 text-sm">Non-Training</p>
                             <p className="text-xs text-gray-500 truncate">Internal tasks</p>
+                          </div>
+                        </div>
+                      </label>
+                      <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
+                        scheduleType === 'leave' 
+                          ? 'border-red-500 bg-red-50/50 shadow-sm' 
+                          : 'border-gray-200 hover:border-gray-300 bg-white'
+                      }`}>
+                        <input 
+                          type="radio" 
+                          name="scheduleType" 
+                          value="leave" 
+                          checked={scheduleType === 'leave'} 
+                          onChange={() => setScheduleType('leave')} 
+                          className="sr-only" 
+                        />
+                        <div className="flex items-center gap-2">
+                          <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                            scheduleType === 'leave' ? 'border-red-500' : 'border-gray-300'
+                          }`}>
+                            {scheduleType === 'leave' && <div className="w-1.5 h-1.5 bg-red-500 rounded-full"></div>}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-medium text-gray-900 text-sm">Leave</p>
+                            <p className="text-xs text-gray-500 truncate">Time off</p>
                           </div>
                         </div>
                       </label>
@@ -3738,7 +3846,7 @@ const SchedulePage = () => {
                             <label className="text-xs font-medium text-gray-700 mb-1.5 block">Role *</label>
                               <select 
                                 name="role" 
-                                value={role} 
+                                value={role ?? ''} 
                                 onChange={e => setRole(e.target.value)} 
                                 required
                               className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
@@ -3753,7 +3861,7 @@ const SchedulePage = () => {
                               <select 
                                 name="client" 
                                 required 
-                                value={selectedClient || ''}
+                                value={selectedClient ?? ''}
                                 onChange={(e) => {
                                   setSelectedClient(e.target.value);
                                   const client = clientsWithPMs.find(c => c.clientId === e.target.value);
@@ -3838,8 +3946,8 @@ const SchedulePage = () => {
                         </AnimatePresence>
                         
                         {selectedClient && availablePMs.length === 0 && allPMs.length > 0 && (
-                          <div className="px-3 py-2 bg-orange-50 border border-orange-200 rounded-md">
-                            <p className="text-xs text-orange-700 font-medium">
+                          <div className="px-3 py-2 bg-orange-100 border border-orange-300 rounded-md">
+                            <p className="text-xs text-orange-600 font-medium">
                               ⚠️ No Program Managers assigned to this client. Please assign PMs in Client Management first.
                             </p>
                           </div>
@@ -3868,7 +3976,7 @@ const SchedulePage = () => {
                         </div>
                       </div>
                     </div>
-                  ) : (
+                  ) : scheduleType === 'non-training' ? (
                     <div className="space-y-4">
                       <div className={cn(cardStyles.surface, 'space-y-3 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
                         <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Task Details</label>
@@ -3887,9 +3995,9 @@ const SchedulePage = () => {
                             <label className="text-xs font-medium text-gray-700 mb-1.5 block">Task Type *</label>
                               <select 
                                 name="taskType" 
-                                value={taskType} 
+                                value={taskType ?? ''} 
                                 onChange={e => setTaskType(e.target.value)} 
-                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm bg-white transition-colors"
+                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-400 focus:border-orange-400 text-sm bg-white transition-colors"
                               >
                               <option value="Question creation">Question Creation</option>
                               <option value="QC">Quality Check</option>
@@ -3904,7 +4012,7 @@ const SchedulePage = () => {
                                 name="taskDetails" 
                                 required 
                               placeholder="Brief description"
-                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm bg-white transition-colors" 
+                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-400 focus:border-orange-400 text-sm bg-white transition-colors" 
                               />
                             </div>
                           </div>
@@ -3915,8 +4023,23 @@ const SchedulePage = () => {
                               required 
                             placeholder="Enter detailed description"
                               rows="3"
-                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm resize-none bg-white transition-colors" 
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-400 focus:border-orange-400 text-sm resize-none bg-white transition-colors" 
                             />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className={cn(cardStyles.surface, 'space-y-3 border border-slate-200 p-4 sm:p-5 shadow-sm border-red-200 bg-red-50/30')}>
+                        <label className="text-xs font-semibold text-red-600 uppercase tracking-wide">Leave</label>
+                        <div>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Reason (optional)</label>
+                          <input
+                            type="text"
+                            name="leaveDescription"
+                            placeholder="e.g. Vacation, Sick leave"
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-white"
+                          />
                         </div>
                       </div>
                     </div>
@@ -3963,6 +4086,11 @@ const SchedulePage = () => {
                     <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
                         <span className="font-semibold text-slate-700">Date Range:</span> {scheduleSummary.dateRange}
                     </div>
+                    {scheduleType === 'leave' && (
+                      <div className="rounded-lg border border-red-200 bg-red-50/50 px-3 py-2 text-xs text-red-700">
+                        <span className="font-semibold text-red-800">Leave</span> — Time off for selected dates
+                      </div>
+                    )}
                       {scheduleType === 'training' && (
                         <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
                           <span className="font-semibold text-slate-700">Client:</span> {scheduleSummary.clientName}
@@ -4124,7 +4252,7 @@ const SchedulePage = () => {
                 {/* Step 1: Task Type Selection */}
                 <div className={cn(cardStyles.surface, 'space-y-4 border border-slate-200 p-4 sm:p-5 shadow-sm')}>
                   <label className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Task Type</label>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
                       scheduleType === 'training' 
                         ? 'border-blue-500 bg-blue-50/50 shadow-sm' 
@@ -4152,7 +4280,7 @@ const SchedulePage = () => {
                     </label>
                     <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
                       scheduleType === 'non-training' 
-                        ? 'border-orange-500 bg-orange-50/50 shadow-sm' 
+                        ? 'border-orange-400 bg-orange-100/50 shadow-sm' 
                         : 'border-gray-200 hover:border-gray-300 bg-white'
                     }`}>
                       <input 
@@ -4165,13 +4293,38 @@ const SchedulePage = () => {
                       />
                       <div className="flex items-center gap-2">
                         <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
-                          scheduleType === 'non-training' ? 'border-orange-500' : 'border-gray-300'
+                          scheduleType === 'non-training' ? 'border-orange-400' : 'border-gray-300'
                         }`}>
-                          {scheduleType === 'non-training' && <div className="w-1.5 h-1.5 bg-orange-500 rounded-full"></div>}
+                          {scheduleType === 'non-training' && <div className="w-1.5 h-1.5 bg-orange-400 rounded-full"></div>}
                         </div>
                         <div className="min-w-0">
                           <p className="font-medium text-gray-900 text-sm">Non-Training</p>
                           <p className="text-xs text-gray-500 truncate">Internal tasks</p>
+                        </div>
+                      </div>
+                    </label>
+                    <label className={`relative p-2.5 border rounded-md cursor-pointer transition-all duration-150 ${
+                      scheduleType === 'leave' 
+                        ? 'border-red-500 bg-red-50/50 shadow-sm' 
+                        : 'border-gray-200 hover:border-gray-300 bg-white'
+                    }`}>
+                      <input 
+                        type="radio" 
+                        name="scheduleType" 
+                        value="leave" 
+                        checked={scheduleType === 'leave'} 
+                        onChange={() => setScheduleType('leave')} 
+                        className="sr-only" 
+                      />
+                      <div className="flex items-center gap-2">
+                        <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                          scheduleType === 'leave' ? 'border-red-500' : 'border-gray-300'
+                        }`}>
+                          {scheduleType === 'leave' && <div className="w-1.5 h-1.5 bg-red-500 rounded-full"></div>}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-900 text-sm">Leave</p>
+                          <p className="text-xs text-gray-500 truncate">Time off</p>
                         </div>
                       </div>
                     </label>
@@ -4207,7 +4360,7 @@ const SchedulePage = () => {
                             <input
                               type="text"
                               placeholder="Search trainers..."
-                              value={trainerSearchTerm}
+                              value={trainerSearchTerm ?? ''}
                               onChange={e => setTrainerSearchTerm(e.target.value)}
                               className="w-full px-2 py-1.5 border border-gray-200 rounded text-xs focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
                             />
@@ -4232,7 +4385,7 @@ const SchedulePage = () => {
                       )}
                     </AnimatePresence>
                   </div>
-                  <input type="hidden" name="trainer" value={selectedTrainer} required />
+                  <input type="hidden" name="trainer" value={selectedTrainer ?? ''} required />
                 </div>
 
                 {/* Step 3: Conditional Fields */}
@@ -4245,7 +4398,7 @@ const SchedulePage = () => {
                           <label className="text-xs font-medium text-gray-700 mb-1.5 block">Role *</label>
                           <select 
                             name="role" 
-                            value={role} 
+                            value={role ?? ''} 
                             onChange={e => setRole(e.target.value)} 
                             required
                             className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
@@ -4260,7 +4413,7 @@ const SchedulePage = () => {
                           <select 
                             name="client" 
                             required 
-                            value={selectedClient || ''}
+                            value={selectedClient ?? ''}
                             onChange={(e) => {
                               const clientId = e.target.value;
                               setSelectedClient(clientId);
@@ -4350,8 +4503,8 @@ const SchedulePage = () => {
                       </AnimatePresence>
                       
                       {selectedClient && availablePMs.length === 0 && allPMs.length > 0 && (
-                        <div className="px-3 py-2 bg-orange-50 border border-orange-200 rounded-md">
-                          <p className="text-xs text-orange-700 font-medium">
+                        <div className="px-3 py-2 bg-orange-100 border border-orange-300 rounded-md">
+                          <p className="text-xs text-orange-600 font-medium">
                             ⚠️ No Program Managers assigned to this client. Please assign PMs in Client Management first.
                           </p>
                         </div>
@@ -4380,7 +4533,7 @@ const SchedulePage = () => {
                       </div>
                     </div>
                   </div>
-                ) : (
+                ) : scheduleType === 'non-training' ? (
                   <div className="space-y-4">
                     <div className="space-y-3">
                       <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Task Details</label>
@@ -4389,9 +4542,9 @@ const SchedulePage = () => {
                           <label className="text-xs font-medium text-gray-700 mb-1.5 block">Task Type *</label>
                           <select 
                             name="taskType" 
-                            value={taskType} 
+                            value={taskType ?? ''} 
                             onChange={e => setTaskType(e.target.value)} 
-                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm bg-white transition-colors"
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-400 focus:border-orange-400 text-sm bg-white transition-colors"
                           >
                             <option value="Question creation">Question Creation</option>
                             <option value="QC">Quality Check</option>
@@ -4406,7 +4559,7 @@ const SchedulePage = () => {
                             name="taskDetails" 
                             required 
                             placeholder="Brief description"
-                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm bg-white transition-colors" 
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-400 focus:border-orange-400 text-sm bg-white transition-colors" 
                           />
                         </div>
                       </div>
@@ -4417,7 +4570,22 @@ const SchedulePage = () => {
                           required 
                           placeholder="Enter detailed description"
                           rows="3"
-                          className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm resize-none bg-white transition-colors" 
+                          className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-orange-400 focus:border-orange-400 text-sm resize-none bg-white transition-colors" 
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className={cn(cardStyles.surface, 'space-y-3 border border-slate-200 p-4 sm:p-5 shadow-sm border-red-200 bg-red-50/30')}>
+                      <label className="text-xs font-semibold text-red-600 uppercase tracking-wide">Leave</label>
+                      <div>
+                        <label className="text-xs font-medium text-gray-700 mb-1.5 block">Reason (optional)</label>
+                        <input
+                          type="text"
+                          name="leaveDescription"
+                          placeholder="e.g. Vacation, Sick leave"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-white"
                         />
                       </div>
                     </div>
@@ -4457,10 +4625,15 @@ const SchedulePage = () => {
                   </div>
                     <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
                       <span className="font-semibold text-slate-700">Type:</span> {scheduleSummary.taskTypeLabel}
-                    </div>
+                  </div>
                     <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
                       <span className="font-semibold text-slate-700">Date Range:</span> {scheduleSummary.dateRange}
                     </div>
+                    {scheduleType === 'leave' && (
+                      <div className="rounded-lg border border-red-200 bg-red-50/50 px-3 py-2 text-xs text-red-700">
+                        <span className="font-semibold text-red-800">Leave</span> — Time off for selected dates
+                      </div>
+                    )}
                     {scheduleType === 'training' && (
                       <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
                         <span className="font-semibold text-slate-700">Client:</span> {scheduleSummary.clientName}
@@ -4590,6 +4763,8 @@ const SchedulePage = () => {
                         <p className="text-sm text-gray-600">
                           {deleteTarget.entry.type === 'training' 
                             ? `${deleteTarget.entry.role} for ${deleteTarget.entry.client} (${deleteTarget.entry.course})`
+                            : deleteTarget.entry.type === 'leave'
+                            ? `Leave${deleteTarget.entry.description ? ': ' + deleteTarget.entry.description : ''}`
                             : deleteTarget.entry.taskDetails
                           }
                         </p>
@@ -4750,15 +4925,14 @@ const SchedulePage = () => {
                         <div className="space-y-1">
                           <p className="font-semibold text-amber-800">Task type cannot be changed</p>
                           <p>
-                            To switch from {originalTaskType === 'training' ? 'Training' : 'Non-Training'} to{' '}
-                            {originalTaskType === 'training' ? 'Non-Training' : 'Training'}, delete this task and create a
+                            To switch from {originalTaskType === 'training' ? 'Training' : originalTaskType === 'leave' ? 'Leave' : 'Non-Training'} to another type, delete this task and create a
                             new one.
                           </p>
                         </div>
                       </div>
                     </div>
                     
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-3 sm:grid-cols-3">
                       <label
                         className={cn(
                           'relative flex flex-col gap-2 rounded-xl border-2 p-3 transition shadow-sm',
@@ -4797,7 +4971,7 @@ const SchedulePage = () => {
                         className={cn(
                           'relative flex flex-col gap-2 rounded-xl border-2 p-3 transition shadow-sm',
                         editingForm.type === 'non-training' 
-                          ? 'border-orange-500 bg-orange-50' 
+                          ? 'border-orange-400 bg-orange-100' 
                             : 'border-slate-200 bg-slate-50',
                           originalTaskType === 'non-training'
                             ? 'cursor-default'
@@ -4817,16 +4991,49 @@ const SchedulePage = () => {
                           <span
                             className={cn(
                               'flex h-5 w-5 items-center justify-center rounded-full border-2',
-                              editingForm.type === 'non-training' ? 'border-orange-500' : 'border-slate-300'
+                              editingForm.type === 'non-training' ? 'border-orange-400' : 'border-slate-300'
                             )}
                           >
                             {editingForm.type === 'non-training' && (
-                              <span className="h-2 w-2 rounded-full bg-orange-500" />
+                              <span className="h-2 w-2 rounded-full bg-orange-400" />
                             )}
                           </span>
                           <span className="text-sm font-semibold text-slate-900">Non-Training</span>
                           </div>
                         <p className="text-xs text-slate-500">Internal tasks & meetings</p>
+                      </label>
+                      <label
+                        className={cn(
+                          'relative flex flex-col gap-2 rounded-xl border-2 p-3 transition shadow-sm',
+                        editingForm.type === 'leave' 
+                          ? 'border-red-500 bg-red-50' 
+                          : 'border-slate-200 bg-slate-50',
+                          originalTaskType === 'leave'
+                            ? 'cursor-default'
+                            : 'cursor-not-allowed opacity-60'
+                        )}
+                      >
+                        <input 
+                          type="radio" 
+                          name="editType" 
+                          value="leave" 
+                          checked={editingForm.type === 'leave'} 
+                          onChange={() => {}} 
+                          disabled={originalTaskType !== 'leave'}
+                          className="sr-only" 
+                        />
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              'flex h-5 w-5 items-center justify-center rounded-full border-2',
+                              editingForm.type === 'leave' ? 'border-red-500' : 'border-slate-300'
+                            )}
+                          >
+                            {editingForm.type === 'leave' && <span className="h-2 w-2 rounded-full bg-red-500" />}
+                          </span>
+                          <span className="text-sm font-semibold text-slate-900">Leave</span>
+                          </div>
+                        <p className="text-xs text-slate-500">Time off</p>
                       </label>
                     </div>
                   </div>
@@ -5014,10 +5221,10 @@ const SchedulePage = () => {
                   <div className={cn(cardStyles.surface, cardPadding, 'space-y-4')}>
                     <div className="space-y-1">
                       <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                        {editingForm.type === 'training' ? 'Training Details' : 'Task Details'}
+                        {editingForm.type === 'training' ? 'Training Details' : editingForm.type === 'leave' ? 'Leave' : 'Task Details'}
                       </label>
                       <p className="text-xs text-slate-500">
-                        Update the key fields that trainers and program managers will see.
+                        {editingForm.type === 'leave' ? 'Optional reason for leave.' : 'Update the key fields that trainers and program managers will see.'}
                       </p>
                     </div>
 
@@ -5073,6 +5280,18 @@ const SchedulePage = () => {
                         />
                       </div>
                     </>
+                  ) : editingForm.type === 'leave' ? (
+                    <div className="space-y-1 rounded-xl border border-red-200 bg-red-50/50 p-3">
+                      <span className="text-xs font-medium uppercase tracking-wide text-red-700">Reason (optional)</span>
+                      <input 
+                        type="text" 
+                        name="leaveDescription" 
+                        value={editingForm.description || ''} 
+                        onChange={(e) => setEditingForm((f) => ({ ...f, description: e.target.value }))}
+                        placeholder="e.g. Vacation, Sick leave"
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-100 bg-white"
+                      />
+                    </div>
                   ) : (
                     <>
                       <div className="space-y-1">
@@ -5131,11 +5350,11 @@ const SchedulePage = () => {
                       <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-600">Task Preview</h4>
                       <span
                         className={cn(
-                          getChipClasses(editingForm.type === 'training' ? 'info' : 'warning'),
+                          editingForm.type === 'training' ? getChipClasses('info') : editingForm.type === 'leave' ? 'bg-red-100 text-red-700' : 'bg-orange-400 text-white',
                           'px-2 py-0.5 text-[11px] uppercase'
                         )}
                       >
-                          {editingForm.type === 'training' ? 'Training' : 'Non-Training'}
+                          {editingForm.type === 'training' ? 'Training' : editingForm.type === 'leave' ? 'Leave' : 'Non-Training'}
                         </span>
                       </div>
                     <div className="space-y-3 text-sm">
@@ -5430,18 +5649,18 @@ const SchedulePage = () => {
                     <label className="block text-xs font-medium text-gray-600 mb-1">Start Date</label>
                   <input
                     type="date"
-                    value={matrixFilters.startDate}
+                    value={matrixFilters.startDate ?? ''}
                     onChange={e => setMatrixFilters(prev => ({ ...prev, startDate: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm"
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-transparent text-sm"
                   />
                 </div>
                 <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">End Date</label>
                   <input
                     type="date"
-                    value={matrixFilters.endDate}
+                    value={matrixFilters.endDate ?? ''}
                     onChange={e => setMatrixFilters(prev => ({ ...prev, endDate: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm"
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-transparent text-sm"
                   />
                   </div>
                 </div>
@@ -5501,6 +5720,22 @@ const SchedulePage = () => {
                       className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500"
                     /> 
                     <span className="text-gray-700">Non-Training Only</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 p-2 rounded-lg transition-colors">
+                    <input 
+                      type="radio" 
+                      name="matrixFilterType" 
+                      value="leave" 
+                      checked={matrixFilters.type === 'leave'} 
+                      onChange={() => setMatrixFilters(prev => ({ 
+                        ...prev, 
+                        type: 'leave',
+                        role: 'all',
+                        nonTrainingTaskTypes: []
+                      }))}
+                      className="w-4 h-4 text-red-600 border-gray-300 focus:ring-red-500"
+                    /> 
+                    <span className="text-gray-700">Leave Only</span>
                   </label>
                   <label className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 p-2 rounded-lg transition-colors">
                     <input 

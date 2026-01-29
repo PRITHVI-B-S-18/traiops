@@ -140,8 +140,9 @@ const TrainerCalendar = ({ schedules, clockStatus = {}, onDateClick, onTaskClick
       const isToday = dateStr === todayInUserTimezone;
       const isSelected = dateStr === selectedDate;
 
-      const trainingTasks = tasks.filter(t => t.client && t.course);
-      const nonTrainingTasks = tasks.filter(t => t.taskType && t.taskDetails);
+      const trainingTasks = tasks.filter(t => t.type === 'training' && t.client && t.course);
+      const nonTrainingTasks = tasks.filter(t => t.type === 'non-training' && t.taskType && t.taskDetails);
+      const leaveTasks = tasks.filter(t => t.type === 'leave');
 
       // Get clock status for this date
       const dateClockStatus = clockStatus[dateStr] || {};
@@ -186,7 +187,7 @@ const TrainerCalendar = ({ schedules, clockStatus = {}, onDateClick, onTaskClick
                     </div>
                   )}
                   {clockInStatus === 'pending' && (
-                    <div className="w-3 h-3 bg-orange-500 rounded-full flex items-center justify-center" title="Clock-In Pending">
+                    <div className="w-3 h-3 bg-orange-400 rounded-full flex items-center justify-center" title="Clock-In Pending">
                       <Clock className="w-1.5 h-1.5 text-white" />
                     </div>
                   )}
@@ -214,8 +215,13 @@ const TrainerCalendar = ({ schedules, clockStatus = {}, onDateClick, onTaskClick
                 </div>
               )}
               {nonTrainingTasks.length > 0 && (
-                <div className="bg-orange-100 border border-orange-300 text-orange-700 text-[9px] sm:text-[10px] px-1 py-0.5 rounded truncate">
+                <div className="bg-orange-200 border border-orange-400 text-orange-700 text-[9px] sm:text-[10px] px-1 py-0.5 rounded truncate">
                   {nonTrainingTasks.length}N
+                </div>
+              )}
+              {leaveTasks.length > 0 && (
+                <div className="bg-red-100 border border-red-300 text-red-700 text-[9px] sm:text-[10px] px-1 py-0.5 rounded truncate">
+                  {leaveTasks.length}L
                 </div>
               )}
             </div>
@@ -242,8 +248,8 @@ const TrainerCalendar = ({ schedules, clockStatus = {}, onDateClick, onTaskClick
             </div>
           </div>
           <div className="group relative">
-            <div className="h-6 w-6 sm:h-7 sm:w-7 rounded-full bg-amber-300 border-2 border-amber-400 flex items-center justify-center cursor-help">
-              <Briefcase className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-amber-700" />
+            <div className="h-6 w-6 sm:h-7 sm:w-7 rounded-full bg-orange-200 border-2 border-orange-400 flex items-center justify-center cursor-help">
+              <Briefcase className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-orange-700" />
             </div>
             <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 px-2 py-1 bg-slate-900 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
               Non-Training Task
@@ -269,8 +275,8 @@ const TrainerCalendar = ({ schedules, clockStatus = {}, onDateClick, onTaskClick
             </div>
           </div>
           <div className="group relative">
-            <div className="h-6 w-6 sm:h-7 sm:w-7 rounded-full bg-orange-100 border-2 border-orange-300 flex items-center justify-center cursor-help">
-              <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-orange-700" />
+            <div className="h-6 w-6 sm:h-7 sm:w-7 rounded-full bg-orange-200 border-2 border-orange-400 flex items-center justify-center cursor-help">
+              <Clock className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-orange-600" />
             </div>
             <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 px-2 py-1 bg-slate-900 text-white text-xs rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
               Pending
