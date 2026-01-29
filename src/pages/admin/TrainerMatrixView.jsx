@@ -9,13 +9,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 // Color mapping for statuses with darker, more professional colors
 const STATUS_COLORS = {
   training: 'bg-blue-700 text-white',
-  nonTraining: 'bg-orange-600 text-white',
+  nonTraining: 'bg-orange-500 text-white',
+  leave: 'bg-red-600 text-white',
   none: 'bg-green-700 text-white',
 };
 
 const STATUS_LABELS = {
   training: 'Training Allocated',
   nonTraining: 'Non-Training Task',
+  leave: 'Leave',
   none: 'Available',
 };
 
@@ -64,11 +66,14 @@ function getEntriesForDay(trainer, day, flattenedScheduleData, currentYear, curr
       }
     }
 
-    // 6. Type Filter (training/non-training/available)
+    // 6. Type Filter (training/non-training/leave/available)
     if (matrixFilters.type === 'training' && entry.type !== 'training') {
       return false;
     }
     if (matrixFilters.type === 'non-training' && entry.type !== 'non-training') {
+      return false;
+    }
+    if (matrixFilters.type === 'leave' && entry.type !== 'leave') {
       return false;
     }
     if (matrixFilters.type === 'available') {
@@ -109,6 +114,7 @@ function getStatusForEntries(entries) {
   if (entries.length === 0) return 'none';
   if (entries.some(e => e.type === 'training' && e.client !== 'Not Alloted')) return 'training';
   if (entries.some(e => e.type === 'non-training' && e.taskDetails && e.taskDetails !== 'Not Alloted')) return 'nonTraining';
+  if (entries.some(e => e.type === 'leave')) return 'leave';
   return 'none';
 }
 
@@ -318,6 +324,7 @@ const TrainerMatrixView = React.memo(({
 
       if (matrixFilters.type === 'training' && entry.type !== 'training') return false;
       if (matrixFilters.type === 'non-training' && entry.type !== 'non-training') return false;
+      if (matrixFilters.type === 'leave' && entry.type !== 'leave') return false;
 
       if (matrixFilters.role !== 'all' && entry.type === 'training') {
         if (!entry.role || entry.role !== matrixFilters.role) return false;
@@ -406,7 +413,9 @@ const TrainerMatrixView = React.memo(({
 
     // If no filters are applied, show all trainers (including available ones)
     if (!hasActiveFilters) {
-      return currentTrainers;
+      return [...currentTrainers].sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+      );
     }
 
     // Apply ALL matrix filters to determine which trainers should be shown
@@ -434,7 +443,9 @@ const TrainerMatrixView = React.memo(({
       });
     });
 
-    return currentTrainers;
+    return [...currentTrainers].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    );
   }, [
     trainers,
     matrixFilters,
@@ -598,6 +609,7 @@ const TrainerMatrixView = React.memo(({
     
     let trainingTrainers = [];
     let nonTrainingTrainers = [];
+    let leaveTrainers = [];
     const assignedTrainersNames = new Set();
     const dateStr = `${currentYear}-${pad2(currentMonth + 1)}`;
     const dayDateStr = `${dateStr}-${pad2(selectedDay)}`;
@@ -610,11 +622,12 @@ const TrainerMatrixView = React.memo(({
       
       // Apply filters (much smaller set now)
       const entriesForThisTrainerOnSelectedDay = rawEntries.filter((entry) => {
-        if (
+        // Leave entries don't have client/course/role; skip "Not Alloted" check only for non-leave
+        if (entry.type !== 'leave' && (
           entry.client === 'Not Alloted' ||
           entry.course === 'Not Alloted' ||
           entry.role === 'Not Alloted'
-        ) {
+        )) {
           return false;
         }
 
@@ -634,6 +647,11 @@ const TrainerMatrixView = React.memo(({
         } else if (entry.type === 'non-training') {
           if (matchesDailySearch(entry)) {
             nonTrainingTrainers.push(entry);
+            assignedTrainersNames.add(entry.trainer);
+          }
+        } else if (entry.type === 'leave') {
+          if (matchesDailySearch(entry)) {
+            leaveTrainers.push(entry);
             assignedTrainersNames.add(entry.trainer);
           }
         }
@@ -698,13 +716,20 @@ const TrainerMatrixView = React.memo(({
     // Apply dailyFilterType for available section
     if (dailyFilterType === 'training') {
       nonTrainingTrainers = [];
+      leaveTrainers = [];
       availableTrainers = [];
     } else if (dailyFilterType === 'non-training') {
       trainingTrainers = [];
+      leaveTrainers = [];
+      availableTrainers = [];
+    } else if (dailyFilterType === 'leave') {
+      trainingTrainers = [];
+      nonTrainingTrainers = [];
       availableTrainers = [];
     } else if (dailyFilterType === 'available') {
       trainingTrainers = [];
       nonTrainingTrainers = [];
+      leaveTrainers = [];
     }
 
     // Apply overall matrix type filter to sections
@@ -714,6 +739,10 @@ const TrainerMatrixView = React.memo(({
     } else if (matrixFilters.type === 'non-training') {
       trainingTrainers = [];
       availableTrainers = [];
+    } else if (matrixFilters.type === 'leave') {
+      trainingTrainers = [];
+      nonTrainingTrainers = [];
+      availableTrainers = [];
     } else if (matrixFilters.type === 'available') {
       trainingTrainers = [];
       nonTrainingTrainers = [];
@@ -722,6 +751,7 @@ const TrainerMatrixView = React.memo(({
     return {
       trainingTrainers,
       nonTrainingTrainers,
+      leaveTrainers,
       availableTrainers
     };
   }, [
@@ -767,8 +797,9 @@ const TrainerMatrixView = React.memo(({
         // Get entries from pre-indexed map (O(1) lookup)
         const rawEntries = entriesByDateAndTrainer.get(trainerKey) || [];
         
-        // Apply filters (much smaller set now)
+        // Apply filters (much smaller set now); leave entries have no client/course/role
         const entries = rawEntries.filter((entry) => {
+          if (entry.type === 'leave') return matchesMatrixFilters(entry, dayDateStr);
           if (
             entry.client === 'Not Alloted' ||
             entry.course === 'Not Alloted' ||
@@ -776,7 +807,6 @@ const TrainerMatrixView = React.memo(({
           ) {
             return false;
           }
-
           return matchesMatrixFilters(entry, dayDateStr);
         });
         
@@ -786,7 +816,9 @@ const TrainerMatrixView = React.memo(({
           hasEntries: entries.length > 0,
           tooltipContent: entries.length === 0
             ? 'No Task Assigned'
-            : (entries[0].type === 'training'
+            : entries[0].type === 'leave'
+              ? `🏷️ Leave\n${entries[0].description ? '📄 Reason: ' + entries[0].description : ''}`
+              : (entries[0].type === 'training'
                 ? `🎓 Training Session\n${entries[0].client ? '👥 Client: ' + entries[0].client + '\n' : ''}${entries[0].course ? '📚 Course: ' + entries[0].course + '\n' : ''}${entries[0].role ? '👤 Role: ' + entries[0].role : ''}`
                 : `📋 Non-Training Task\n${entries[0].taskDetails ? '📝 Task: ' + entries[0].taskDetails + '\n' : ''}${entries[0].taskType ? '🏷️ Type: ' + entries[0].taskType + '\n' : ''}${entries[0].description ? '📄 Description: ' + entries[0].description : ''}`
               )
@@ -998,7 +1030,8 @@ const TrainerMatrixView = React.memo(({
     const accentClassMap = {
       blue: 'text-blue-600 hover:bg-blue-100/70 focus:ring-blue-500',
       orange: 'text-orange-600 hover:bg-orange-100/70 focus:ring-orange-500',
-      green: 'text-green-600 hover:bg-green-100/70 focus:ring-green-500'
+      green: 'text-green-600 hover:bg-green-100/70 focus:ring-green-500',
+      red: 'text-red-600 hover:bg-red-100/70 focus:ring-red-500'
     };
     const base = 'inline-flex items-center justify-center rounded-full p-2 bg-white/80 shadow-sm border border-white/70 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1';
     const variantClasses = variant === 'danger'
@@ -1030,9 +1063,9 @@ const TrainerMatrixView = React.memo(({
       headerBg: 'bg-orange-50/70',
       cardBg: 'bg-orange-50/40',
       textPrimary: 'text-orange-900',
-      badge: 'bg-orange-100 text-orange-700',
-      dot: 'bg-orange-500',
-      border: 'border-orange-500/40'
+      badge: 'bg-orange-400 text-white',
+      dot: 'bg-orange-400',
+      border: 'border-orange-400/50'
     },
     green: {
       headerBg: 'bg-green-50/70',
@@ -1041,6 +1074,14 @@ const TrainerMatrixView = React.memo(({
       badge: 'bg-green-100 text-green-700',
       dot: 'bg-green-500',
       border: 'border-green-500/40'
+    },
+    red: {
+      headerBg: 'bg-red-50/70',
+      cardBg: 'bg-red-50/40',
+      textPrimary: 'text-red-900',
+      badge: 'bg-red-100 text-red-700',
+      dot: 'bg-red-500',
+      border: 'border-red-500/40'
     }
   };
 
@@ -1164,6 +1205,13 @@ const TrainerMatrixView = React.memo(({
         accent: 'orange',
         items: trainerCategoriesMemo?.nonTrainingTrainers ?? [],
         emptyLabel: 'No non-training tasks for this date'
+      },
+      {
+        key: 'leave',
+        title: 'Leave',
+        accent: 'red',
+        items: trainerCategoriesMemo?.leaveTrainers ?? [],
+        emptyLabel: 'No leave for this date'
       },
       {
         key: 'available',
@@ -1364,7 +1412,7 @@ const TrainerMatrixView = React.memo(({
       </div>
       
       {/* Legend for matrix view with enhanced colors */}
-      <div className="flex gap-6 mb-4">
+      <div className="flex flex-wrap gap-6 mb-4">
         <div className="flex items-center gap-2">
           <span className={`inline-block w-6 h-6 rounded-full ${STATUS_COLORS.training} shadow-sm`}></span>
           <span className="text-sm font-medium">{STATUS_LABELS.training}</span>
@@ -1372,6 +1420,10 @@ const TrainerMatrixView = React.memo(({
         <div className="flex items-center gap-2">
           <span className={`inline-block w-6 h-6 rounded-full ${STATUS_COLORS.nonTraining} shadow-sm`}></span>
           <span className="text-sm font-medium">{STATUS_LABELS.nonTraining}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`inline-block w-6 h-6 rounded-full ${STATUS_COLORS.leave} shadow-sm`}></span>
+          <span className="text-sm font-medium">{STATUS_LABELS.leave}</span>
         </div>
         <div className="flex items-center gap-2">
           <span className={`inline-block w-6 h-6 rounded-full ${STATUS_COLORS.none} shadow-sm`}></span>
@@ -1596,12 +1648,12 @@ const TrainerMatrixView = React.memo(({
           }
         }}
       >
-        <DialogContent className="max-w-5xl w-full p-0 overflow-hidden">
+        <DialogContent className="max-w-[95vw] w-full p-0 overflow-hidden">
           <AnimatePresence mode="wait" initial={false}>
             {selectedDay && (
               <motion.div
                 key={selectedDay}
-                className="flex flex-col max-h-[85vh]"
+                className="flex flex-col max-h-[92vh]"
                 initial={{ opacity: 0, y: 24 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 24 }}
@@ -1750,6 +1802,7 @@ const TrainerMatrixView = React.memo(({
                               ['all', 'All Sections'],
                               ['training', 'Training Only'],
                               ['non-training', 'Non-Training Only'],
+                              ['leave', 'Leave Only'],
                               ['available', 'Available Only']
                             ].map(([value, label]) => (
                               <label
@@ -1802,8 +1855,8 @@ const TrainerMatrixView = React.memo(({
             </div>
           </div>
 
-                <div className="flex gap-2">
-                  {["training", "non-training", "available"].map(key => {
+                <div className="flex flex-wrap gap-2">
+                  {["training", "non-training", "leave", "available"].map(key => {
                     const section = dailySections.find(s => s.key === key);
                     return (
                       <div key={key} className="px-3 py-1.5 rounded-full bg-slate-100 text-xs font-medium text-slate-600">
@@ -1817,7 +1870,8 @@ const TrainerMatrixView = React.memo(({
               {(() => {
             const allTaskIds = [
                   ...((trainerCategoriesMemo?.trainingTrainers ?? []).map(e => e.id)),
-                  ...((trainerCategoriesMemo?.nonTrainingTrainers ?? []).map(e => e.id))
+                  ...((trainerCategoriesMemo?.nonTrainingTrainers ?? []).map(e => e.id)),
+                  ...((trainerCategoriesMemo?.leaveTrainers ?? []).map(e => e.id))
             ];
             const allSelected = allTaskIds.length > 0 && allTaskIds.every(id => selectedTaskIds.includes(id));
             return (
@@ -1838,7 +1892,7 @@ const TrainerMatrixView = React.memo(({
             );
           })()}
 
-              <div className="hidden md:grid md:grid-cols-3 gap-4">
+              <div className="hidden md:grid md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {dailySections.map(section => (
                   <div key={section.key} className="flex flex-col rounded-2xl border border-gray-200 bg-white shadow-sm h-[60vh]">
                     <div className={`flex items-center justify-between px-4 py-3 border-b ${getBorderStyle(section.accent)}`}>
@@ -1877,7 +1931,7 @@ const TrainerMatrixView = React.memo(({
                       </div>
                     </button>
                     {activeDailyPanel === section.key && (
-                      <div className="px-4 pb-4 space-y-3 max-h-[55vh] overflow-y-auto">
+                      <div className="px-4 pb-4 space-y-3 max-h-[70vh] overflow-y-auto">
                         {renderDailySectionItems(section)}
                     </div>
                     )}

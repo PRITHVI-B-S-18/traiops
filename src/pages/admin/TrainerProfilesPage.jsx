@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { db } from '../../firebase';
 import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { PDFViewer, PDFDownloadLink, Document, Page, Image, View, Text, StyleSheet, Font } from '@react-pdf/renderer';
 import { parse, differenceInMonths } from 'date-fns';
-import { Plus, FileText, AlertTriangle, Loader2, User } from 'lucide-react';
+import { Plus, FileText, AlertTriangle, Loader2, User, ChevronDown } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 import {
   Dialog,
@@ -271,6 +271,22 @@ const TrainerProfilesPage = () => {
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState(null);
   const [selectedTrainerId, setSelectedTrainerId] = useState('');
+  const [isTrainerDropdownOpen, setIsTrainerDropdownOpen] = useState(false);
+  const [trainerSearchTerm, setTrainerSearchTerm] = useState('');
+  const trainerDropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (trainerDropdownRef.current && !trainerDropdownRef.current.contains(e.target)) {
+        setIsTrainerDropdownOpen(false);
+      }
+    };
+    if (isTrainerDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isTrainerDropdownOpen]);
+
   const [showPdfPreview, setShowPdfPreview] = useState(false);
   const [originalFormState, setOriginalFormState] = useState(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -470,22 +486,78 @@ const TrainerProfilesPage = () => {
       {profiles.length > 0 && (
         <>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4" ref={trainerDropdownRef}>
           <label htmlFor="select-trainer" className="text-sm font-medium text-slate-700">Select Trainer</label>
-          <select
-            id="select-trainer"
-            className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent bg-white shadow-sm min-w-[200px]"
-            value={selectedTrainerId}
-            onChange={(e) => {
-              setSelectedTrainerId(e.target.value);
-              setShowForm(false);
-            }}
-          >
-            <option value="">-- Select Trainer --</option>
-            {profiles.map(trainer => (
-              <option key={trainer.id} value={trainer.id}>{trainer.name}</option>
-            ))}
-          </select>
+          <div className="relative min-w-[220px]">
+            <button
+              id="select-trainer"
+              type="button"
+              onClick={() => {
+                setIsTrainerDropdownOpen((prev) => !prev);
+                if (!isTrainerDropdownOpen) setTrainerSearchTerm('');
+              }}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm text-left bg-white shadow-sm flex items-center justify-between gap-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors hover:border-slate-300"
+            >
+              <span className="truncate text-slate-900">
+                {selectedTrainerId
+                  ? (profiles.find((p) => p.id === selectedTrainerId)?.name ?? '-- Select Trainer --')
+                  : '-- Select Trainer --'}
+              </span>
+              <ChevronDown
+                className={cn('h-4 w-4 text-slate-400 flex-shrink-0 transition-transform duration-200', isTrainerDropdownOpen && 'rotate-180')}
+              />
+            </button>
+            {isTrainerDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 z-50 w-full min-w-[220px] bg-white shadow-lg rounded-lg border border-slate-200 flex flex-col max-h-96">
+                <div className="p-2 border-b border-slate-100">
+                  <input
+                    type="text"
+                    placeholder="Search trainers..."
+                    value={trainerSearchTerm}
+                    onChange={(e) => setTrainerSearchTerm(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    autoFocus
+                  />
+                </div>
+                <ul className="py-1 overflow-y-auto max-h-80">
+                  <li
+                    onClick={() => {
+                      setSelectedTrainerId('');
+                      setShowForm(false);
+                      setIsTrainerDropdownOpen(false);
+                    }}
+                    className={cn(
+                      'px-3 py-2 text-sm cursor-pointer transition-colors',
+                      !selectedTrainerId ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700 hover:bg-slate-50'
+                    )}
+                  >
+                    -- Select Trainer --
+                  </li>
+                  {[...profiles]
+                    .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
+                    .filter((trainer) =>
+                      (trainer.name || '').toLowerCase().includes(trainerSearchTerm.toLowerCase())
+                    )
+                    .map((trainer) => (
+                      <li
+                        key={trainer.id}
+                        onClick={() => {
+                          setSelectedTrainerId(trainer.id);
+                          setShowForm(false);
+                          setIsTrainerDropdownOpen(false);
+                        }}
+                        className={cn(
+                          'px-3 py-2 text-sm cursor-pointer transition-colors',
+                          selectedTrainerId === trainer.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700 hover:bg-slate-50'
+                        )}
+                      >
+                        {trainer.name}
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

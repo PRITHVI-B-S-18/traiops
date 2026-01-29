@@ -919,12 +919,13 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
                 {tasks.map((task, index) => {
                   // Determine task type: check explicit type first, then infer from fields
                   const isTraining = task.type === 'training' || 
-                    (task.type !== 'non-training' && (task.course || task.client));
+                    (task.type !== 'non-training' && task.type !== 'leave' && (task.course || task.client));
                   const isNonTraining = task.type === 'non-training' || 
-                    (task.type !== 'training' && (task.taskDetails || task.taskType));
+                    (task.type !== 'training' && task.type !== 'leave' && (task.taskDetails || task.taskType));
+                  const isLeave = task.type === 'leave';
                   
                   // Use explicit type if available, otherwise infer
-                  const taskType = task.type || (isTraining ? 'training' : (isNonTraining ? 'non-training' : 'unknown'));
+                  const taskType = task.type || (isLeave ? 'leave' : (isTraining ? 'training' : (isNonTraining ? 'non-training' : 'unknown')));
                   
                   return (
                   <div key={index} className="bg-slate-50 rounded-lg p-3.5 border border-slate-200">
@@ -935,8 +936,13 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
                           <BookOpen className="h-3 w-3 mr-1" />
                           Training Session
                         </span>
+                      ) : taskType === 'leave' ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-700">
+                          <Briefcase className="h-3 w-3 mr-1" />
+                          Leave
+                        </span>
                       ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-400 text-white">
                           <Briefcase className="h-3 w-3 mr-1" />
                           Non-Training Task
                         </span>
@@ -971,6 +977,18 @@ const TaskDetailsModal = ({ isOpen, onClose, date, tasks = [], showClockActions 
                               <div className="flex-1 min-w-0">
                                 <span className="text-[11px] text-slate-500">Role</span>
                                 <p className="text-sm text-slate-700 leading-tight">{task.role}</p>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : taskType === 'leave' ? (
+                        <>
+                          {task.description && (
+                            <div className="flex items-center gap-2">
+                              <FileText className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <span className="text-[11px] text-slate-500">Reason</span>
+                                <p className="text-sm text-slate-700 leading-tight">{task.description}</p>
                               </div>
                             </div>
                           )}

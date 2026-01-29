@@ -196,8 +196,13 @@ const UpcomingTasksView = ({ schedules = {}, clockStatus = {}, onTaskClick, onCl
                                     <BookOpen className="h-3 w-3 mr-1" />
                                     Training Session
                                   </span>
+                                ) : task.type === 'leave' ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-700">
+                                    <Briefcase className="h-3 w-3 mr-1" />
+                                    Leave
+                                  </span>
                                 ) : (
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700">
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-orange-400 text-white">
                                     <Briefcase className="h-3 w-3 mr-1" />
                                     Non-Training Task
                                   </span>
@@ -222,6 +227,16 @@ const UpcomingTasksView = ({ schedules = {}, clockStatus = {}, onTaskClick, onCl
                                       <User className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
                                       <span className="text-xs text-slate-500 min-w-[45px]">Role:</span>
                                       <span className="text-sm text-slate-600 flex-1">{task.role}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : task.type === 'leave' ? (
+                                <div className="space-y-1.5">
+                                  {task.description && (
+                                    <div className="flex items-center gap-2">
+                                      <FileText className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                                      <span className="text-xs text-slate-500 min-w-[45px]">Reason:</span>
+                                      <span className="text-sm text-slate-600 flex-1">{task.description}</span>
                                     </div>
                                   )}
                                 </div>

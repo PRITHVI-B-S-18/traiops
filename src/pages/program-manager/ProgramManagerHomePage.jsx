@@ -917,7 +917,7 @@ export default function ProgramManagerHomePage() {
                         )}
                         <div className="flex items-center gap-2 text-sm text-slate-600">
                           <span>
-                            <strong>Task Type:</strong> {selectedSchedule.type === 'training' ? 'Training' : 'Non-Training'}
+                            <strong>Task Type:</strong> {selectedSchedule.type === 'training' ? 'Training' : selectedSchedule.type === 'leave' ? 'Leave' : 'Non-Training'}
                           </span>
                         </div>
                         {selectedSchedule.description && (
