@@ -133,6 +133,7 @@ const SchedulePage = () => {
   const [scheduleType, setScheduleType] = useState('training');
   const [role, setRole] = useState('');
   const [taskType, setTaskType] = useState('Question creation');
+  const [leaveReason, setLeaveReason] = useState('');
   const [trainerList, setTrainerList] = useState([]);
   const [selectedTrainer, setSelectedTrainer] = useState('');
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
@@ -1207,7 +1208,7 @@ const SchedulePage = () => {
         startDate: selectedDateRange.startDate,
         endDate: selectedDateRange.endDate,
         trainer: trainerName,
-        description: form.leaveDescription?.value || '',
+        description: leaveReason || '',
         type: 'leave',
         id: Date.now(),
         excludedDates: selectedDateRange.excludedDates || []
@@ -1379,7 +1380,8 @@ const SchedulePage = () => {
     }
     
     setIsAllocateModalOpen(false);
-    setSendEmailOnCreate(true); // Reset to default
+    setSendEmailOnCreate(true);
+    setLeaveReason('');
     setSelectedClient(null); // Reset selected client
     setSelectedPMs([]); // Reset selected PMs
     setAvailablePMs([]); // Reset available PMs
@@ -1575,6 +1577,7 @@ const SchedulePage = () => {
     setScheduleType('training');
     setRole('');
     setTaskType('Question creation');
+    setLeaveReason('');
     setSelectedTrainer('');
     setTrainerSearchTerm('');
     setIsTrainerDropdownOpen(false);
@@ -1591,6 +1594,7 @@ const SchedulePage = () => {
     setAvailablePMs([]); // Reset available PMs
     setScheduleType('training'); // Reset to training
     setRole(''); // Reset role
+    setLeaveReason(''); // Reset leave reason
     setSelectedTrainer(''); // Reset trainer
     setTrainerSearchTerm(''); // Reset search
     setIsTrainerDropdownOpen(false); // Close dropdown
@@ -1822,7 +1826,7 @@ const SchedulePage = () => {
           startDate: date,
           endDate: date,
           trainer: trainerName,
-          description: form.leaveDescription?.value || '',
+          description: leaveReason || '',
           type: 'leave',
           id: Date.now() + Math.random()
         };
@@ -3651,6 +3655,7 @@ const SchedulePage = () => {
             onScheduleTask={({ trainer, date }) => {
               setSelectedTrainer(trainer.name);
               setSelectedDate(date);
+              setLeaveReason('');
               setIsAllocateModalOpen(true);
             }}
             onEditTask={(entry, date) => {
@@ -3703,7 +3708,8 @@ const SchedulePage = () => {
                       size="icon"
                       onClick={() => {
                         setIsAllocateModalOpen(false);
-                        setSendEmailOnCreate(true); // Reset to default
+                        setSendEmailOnCreate(true);
+                        setLeaveReason('');
                       }}
                       className="h-8 w-8 rounded-md hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
                       aria-label="Back"
@@ -3722,7 +3728,8 @@ const SchedulePage = () => {
                     size="icon" 
                     onClick={() => {
                     setIsAllocateModalOpen(false);
-                    setSendEmailOnCreate(true); // Reset to default
+                    setSendEmailOnCreate(true);
+                    setLeaveReason('');
                     }} 
                     className="h-8 w-8 rounded-md hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
                     aria-label="Close"
@@ -3808,7 +3815,7 @@ const SchedulePage = () => {
                           name="scheduleType" 
                           value="leave" 
                           checked={scheduleType === 'leave'} 
-                          onChange={() => setScheduleType('leave')} 
+                          onChange={() => { setScheduleType('leave'); setLeaveReason(''); }} 
                           className="sr-only" 
                         />
                         <div className="flex items-center gap-2">
@@ -4037,7 +4044,10 @@ const SchedulePage = () => {
                           <input
                             type="text"
                             name="leaveDescription"
+                            value={leaveReason}
+                            onChange={(e) => setLeaveReason(e.target.value)}
                             placeholder="e.g. Vacation, Sick leave"
+                            autoComplete="off"
                             className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-white"
                           />
                         </div>
@@ -4160,7 +4170,8 @@ const SchedulePage = () => {
                         type="button" 
                         onClick={() => {
                           setIsAllocateModalOpen(false);
-                          setSendEmailOnCreate(true); // Reset to default
+                          setSendEmailOnCreate(true);
+                          setLeaveReason('');
                         }} 
                         variant="outline" 
                         className="px-4 py-2 text-sm border-gray-300 hover:bg-gray-50"
@@ -4313,7 +4324,7 @@ const SchedulePage = () => {
                         name="scheduleType" 
                         value="leave" 
                         checked={scheduleType === 'leave'} 
-                        onChange={() => setScheduleType('leave')} 
+                        onChange={() => { setScheduleType('leave'); setLeaveReason(''); }} 
                         className="sr-only" 
                       />
                       <div className="flex items-center gap-2">
@@ -4584,7 +4595,10 @@ const SchedulePage = () => {
                         <input
                           type="text"
                           name="leaveDescription"
+                          value={leaveReason}
+                          onChange={(e) => setLeaveReason(e.target.value)}
                           placeholder="e.g. Vacation, Sick leave"
+                          autoComplete="off"
                           className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-white"
                         />
                       </div>
