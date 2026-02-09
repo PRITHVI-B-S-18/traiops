@@ -131,13 +131,14 @@ const truncateText = (text, maxLength) => {
 // PDF styles
 const styles = StyleSheet.create({
   page: { position: 'relative', width: '100%', height: '100%', fontFamily: 'Poppins' },
+  pageWithPadding: { paddingTop: 48, paddingBottom: 48, paddingHorizontal: 0 },
   bgImage: { position: 'absolute', width: '100%', height: '100%', objectFit: 'cover' },
-  header: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fceeee', height: 120, paddingHorizontal: 40, paddingTop: 50 },
+  header: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fceeee', height: 120, paddingHorizontal: 40, paddingTop: 50, marginTop: -48 },
   photoPlaceholder: { width: 80, height: 100, backgroundColor: '#fff', border: '1px solid #ccc', marginRight: 32 },
   headerText: { flex: 1, flexDirection: 'column', justifyContent: 'center' },
   heading: { fontSize: 26, fontWeight: 'extrabold', textAlign: 'left', marginBottom: 2, letterSpacing: 0.5, fontFamily: 'Poppins' },
   subheading: { fontSize: 18, fontWeight: 'medium', textAlign: 'left', marginBottom: 8, color: '#444', fontFamily: 'Poppins' },
-  detailsSection: { marginTop: 40, paddingHorizontal: 40 },
+  detailsSection: { marginTop: 24, paddingHorizontal: 40 },
   detailsRow: { flexDirection: 'row', marginBottom: 8, alignItems: 'flex-start' },
   detailsLabel: { fontWeight: 'bold', fontSize: 13, color: '#222', width: 160, textAlign: 'left', fontFamily: 'Poppins' },
   colonSeparator: { fontSize: 13, color: '#222', width: 10, textAlign: 'center', fontFamily: 'Poppins' },
@@ -194,8 +195,8 @@ const TrainerProfilePDF = ({ profile }) => (
     <Page size="A4" style={styles.page}>
       <Image src={page1} style={styles.bgImage} />
     </Page>
-    {/* Page 2: Profile Details with header and photo placeholder */}
-    <Page size="A4" style={{ ...styles.page, backgroundColor: '#fff' }}>
+    {/* Page 2: Profile Details with header and photo placeholder (padding ensures overflow pages have top/bottom gap) */}
+    <Page size="A4" style={{ ...styles.page, ...styles.pageWithPadding, backgroundColor: '#fff' }}>
       <View style={styles.header}>
         {profile.showPhotoPlaceholder && <View style={styles.photoPlaceholder} />}
         <View style={styles.headerText}>
@@ -250,10 +251,23 @@ const TrainerProfilePDF = ({ profile }) => (
           </View>
         ))}
       </View>
-      <Text style={styles.sectionHeader}>About Trainer</Text>
-      <Text style={styles.about}>
-        {profile.aboutTrainer}
-      </Text>
+      {(() => {
+        const aboutText = profile.aboutTrainer || '';
+        // Match first "real" sentence: period must follow 2+ letters (avoids splitting at B.E., K.V.N, etc.)
+        const firstSentenceMatch = aboutText.match(/^.*?[A-Za-z]{2,}\.\s*/);
+        const matched = firstSentenceMatch ? firstSentenceMatch[0] : '';
+        const firstSentence = matched ? matched.trimEnd() : aboutText.slice(0, 100);
+        const restOfAbout = matched.length > 0 ? aboutText.slice(matched.length).trim() : (firstSentence.length < aboutText.length ? aboutText.slice(firstSentence.length).trim() : '');
+        return (
+          <>
+            <View wrap={false}>
+              <Text style={styles.sectionHeader}>About Trainer</Text>
+              {firstSentence ? <Text style={styles.about}>{firstSentence}{restOfAbout ? ' ' : ''}</Text> : null}
+            </View>
+            {restOfAbout ? <Text style={styles.about}>{restOfAbout}</Text> : null}
+          </>
+        );
+      })()}
       <Image src={footerImage} style={styles.footerImage} />
     </Page>
     {/* Page 3: page3.png as background only */}

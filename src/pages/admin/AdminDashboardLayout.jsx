@@ -59,21 +59,21 @@ const AdminDashboardLayout = () => {
     { path: '/admin/clock-requests', label: 'Clock Request Management', icon: Clock },
   ];
 
-  const sidebarWidthClass = useMemo(() => (sidebarCollapsed ? 'lg:w-20' : 'lg:w-48'), [sidebarCollapsed]);
+  const sidebarWidthClass = useMemo(() => (sidebarCollapsed ? 'md:w-20' : 'md:w-52'), [sidebarCollapsed]);
 
   return (
-    <div className={cn('relative flex min-h-screen w-full', layoutBackground)}>
+    <div className={cn('relative flex min-h-screen w-full min-w-0 overflow-x-hidden', layoutBackground)}>
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm md:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-40 flex h-full flex-col overflow-hidden border-r border-slate-200 bg-white shadow-xl transition-all duration-300 ease-in-out lg:sticky lg:top-0 lg:h-screen lg:self-start lg:translate-x-0',
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
+          'fixed inset-y-0 left-0 z-40 flex h-full w-64 flex-shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white shadow-xl transition-all duration-300 ease-in-out md:sticky md:top-0 md:h-screen md:self-start md:translate-x-0',
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
           sidebarWidthClass
         )}
       >
@@ -93,7 +93,7 @@ const AdminDashboardLayout = () => {
           <div className="flex items-center gap-2">
               <button
                 onClick={() => setSidebarCollapsed((prev) => !prev)}
-                className="hidden rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 lg:inline-flex"
+                className="hidden rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 md:inline-flex"
                 aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               >
                 {sidebarCollapsed ? (
@@ -104,7 +104,7 @@ const AdminDashboardLayout = () => {
               </button>
           <button
               onClick={() => setSidebarOpen((prev) => !prev)}
-              className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 lg:hidden"
+              className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 md:hidden"
               aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
       >
               <Menu className="h-4 w-4" aria-hidden="true" />
@@ -178,7 +178,7 @@ const AdminDashboardLayout = () => {
       </aside>
       
       <div className="flex flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 shadow-sm lg:hidden">
+        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 shadow-sm md:hidden">
         <button
             onClick={() => setSidebarOpen(true)}
             className="rounded-lg border border-slate-200 p-2 text-slate-600 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
@@ -189,8 +189,8 @@ const AdminDashboardLayout = () => {
           <span className="text-sm font-semibold text-slate-700">Admin Panel</span>
         </header>
 
-        <main className="flex-1 overflow-y-auto lg:h-screen lg:overflow-y-auto">
-          <div className="mx-auto w-full max-w-7xl px-4 pb-8 pt-6 sm:px-6 lg:px-8">
+        <main className="flex-1 min-w-0 overflow-y-auto md:h-screen md:overflow-y-auto">
+          <div className="mx-auto w-full max-w-7xl min-w-0 px-4 pb-8 pt-6 sm:px-6 lg:px-8">
             <div className="space-y-4">
               <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex items-start gap-3 flex-1 min-w-0">
