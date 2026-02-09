@@ -55,8 +55,8 @@ const SessionWarning = () => {
                   </p>
                   <p className="text-xs text-[#666666] leading-relaxed">
                     {sessionExpiring
-                      ? 'Your 24-hour session will expire soon. Click "Stay Logged In" to extend your session for another 24 hours, or you will be logged out automatically.'
-                      : 'You have been inactive for 24 hours. Please click "Stay Logged In" to continue, or you will be logged out in 2 minutes.'}
+                      ? 'Your 12-hour session will expire soon. Click "Stay Logged In" to extend your session for another 12 hours, or you will be logged out automatically.'
+                      : 'You have been inactive for 12 hours. Please click "Stay Logged In" to continue, or you will be logged out in 2 minutes.'}
                   </p>
                 </div>
               </div>

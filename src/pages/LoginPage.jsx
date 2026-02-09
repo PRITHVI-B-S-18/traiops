@@ -472,7 +472,7 @@ const LoginPage = () => {
                   >
                     <div className="flex items-center gap-2">
                       <AlertCircle className="h-4 w-4 text-[#5A5A5A] flex-shrink-0" />
-                      <p className="text-xs font-medium text-[#4A4A4A]">Your 24-hour session has expired. Please log in again to continue.</p>
+                      <p className="text-xs font-medium text-[#4A4A4A]">Your 12-hour session has expired. Please log in again to continue.</p>
           </div>
                   </motion.div>
                 )}

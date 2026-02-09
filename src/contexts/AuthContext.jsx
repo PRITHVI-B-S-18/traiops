@@ -5,9 +5,13 @@ import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { AuthContext } from './AuthContextValue';
 
 // Session timeout configuration (in milliseconds)
-const SESSION_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
-const IDLE_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours of inactivity
-const WARNING_TIME = 10 * 60 * 1000; // Show warning 10 minutes before idle timeout
+// Set VITE_DEBUG_SESSION_MINUTES=2 in .env for quick testing of auto logout (2 min instead of 12 hrs)
+const DEBUG_MINUTES = import.meta.env.VITE_DEBUG_SESSION_MINUTES
+  ? parseInt(import.meta.env.VITE_DEBUG_SESSION_MINUTES, 10) * 60 * 1000
+  : null;
+const SESSION_TIMEOUT = DEBUG_MINUTES ?? 12 * 60 * 60 * 1000; // 12 hours (or debug override)
+const IDLE_TIMEOUT = DEBUG_MINUTES ?? 12 * 60 * 60 * 1000; // 12 hours of inactivity (or debug override)
+const WARNING_TIME = DEBUG_MINUTES ? 30 * 1000 : 10 * 60 * 1000; // 10 min before (30 sec when debugging)
 
 const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -26,7 +30,7 @@ const AuthProvider = ({ children }) => {
   // Update last activity timestamp
   const updateActivity = useCallback(() => {
     lastActivityRef.current = Date.now();
-    // Only clear idle warnings, not session expiration warnings (24-hour limit)
+    // Only clear idle warnings, not session expiration warnings (12-hour limit)
     // Session expiration warnings require explicit extension
     setSessionWarning(prev => {
       // If it's a session expiration warning, keep it
@@ -143,12 +147,12 @@ const AuthProvider = ({ children }) => {
       }
     }
 
-    // Check 24-hour session timeout
+    // Check 12-hour session timeout
     const sessionElapsed = now - sessionStartTimeRef.current;
     const timeUntilSessionTimeout = SESSION_TIMEOUT - sessionElapsed;
     
     if (timeUntilSessionTimeout > 0) {
-      // Set warning timer (10 minutes before 24-hour timeout)
+      // Set warning timer (10 minutes before 12-hour timeout)
       if (timeUntilSessionTimeout > WARNING_TIME) {
         warningTimerRef.current = setTimeout(() => {
           setSessionWarning(true);
@@ -160,9 +164,9 @@ const AuthProvider = ({ children }) => {
         setSessionExpiring(true);
       }
 
-      // Set session expiration timer (24 hours from login)
+      // Set session expiration timer (12 hours from login)
       sessionTimerRef.current = setTimeout(async () => {
-        // 24 hours elapsed, logout user
+        // 12 hours elapsed, logout user
         await performLogout();
         window.location.href = '/login?reason=session_timeout';
       }, timeUntilSessionTimeout);
@@ -199,14 +203,14 @@ const AuthProvider = ({ children }) => {
       console.error('Error checking token expiration:', error);
     }
 
-    // Setup idle timeout check (24 hours of inactivity)
+    // Setup idle timeout check (12 hours of inactivity)
     const checkIdle = () => {
       const idleTime = Date.now() - lastActivityRef.current;
       const sessionElapsed = Date.now() - sessionStartTimeRef.current;
       
-      // Check if user has been idle for 24 hours OR total session time is 24 hours
+      // Check if user has been idle for 12 hours OR total session time is 12 hours
       if (idleTime >= IDLE_TIMEOUT || sessionElapsed >= SESSION_TIMEOUT) {
-        // User has been idle for 24 hours or session expired
+        // User has been idle for 12 hours or session expired
         setSessionWarning(true);
         setSessionExpiring(true);
         
@@ -421,7 +425,7 @@ const AuthProvider = ({ children }) => {
         // Force token refresh
         await auth.currentUser.getIdToken(true);
         
-        // Reset 24-hour session timer
+        // Reset 12-hour session timer
         const now = Date.now();
         sessionStartTimeRef.current = now;
         sessionStorage.setItem('sessionStartTime', now.toString());
