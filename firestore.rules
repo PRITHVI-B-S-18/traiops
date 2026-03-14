@@ -34,7 +34,7 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email;
     }
     
-    // Users collection - Only admins can create/update/delete
+    // Users collection
     match /users/{userId} {
       // Allow all authenticated active users to read user documents
       // This is needed for:
@@ -44,8 +44,10 @@ service cloud.firestore {
       // Note: User documents typically only contain non-sensitive data (email, displayName, role, status)
       allow read: if request.auth != null && isUserActive();
       
-      // Only admins can create/update users
-      allow create: if isAdmin() && isUserActive();
+      // Allow a user to create their own document (invitation signup / first-time account creation)
+      // Allow admins to create any user document (e.g. legacy create-user flow)
+      allow create: if request.auth != null && (request.auth.uid == userId || (isAdmin() && isUserActive()));
+      // Only admins can update users (no self-update of role/status)
       allow update: if isAdmin() && isUserActive();
       allow delete: if false; // Prevent deletion from client
     }
@@ -59,11 +61,14 @@ service cloud.firestore {
       // This must come after admin read to allow admin queries, but still allow public access to pending invites
       allow get: if resource.data.status == 'pending';
       
-      // Only authenticated admins can create/update
+      // Only authenticated admins can create
       allow create: if isAdmin() && isUserActive();
       
-      allow update: if request.auth != null && isUserActive() &&
-        (resource.data.invitedBy == request.auth.uid || isAdmin());
+      // Invitee can update when accepting (pending → accepted); admins/inviter can update otherwise
+      allow update: if request.auth != null && (
+        resource.data.status == 'pending' ||
+        (isUserActive() && (resource.data.invitedBy == request.auth.uid || isAdmin()))
+      );
       
       // No deletes from the client
       allow delete: if false;
@@ -193,13 +198,19 @@ service cloud.firestore {
       allow read: if request.auth != null && isUserActive();
       allow write: if isAdmin() && isUserActive();
     }
+
+    // Settings collection (e.g., tech stacks)
+    match /settings/{settingId} {
+      allow read: if isAdmin() && isUserActive();
+      allow write: if isAdmin() && isUserActive();
+    }
     
     // Mappings collection - Admin only
     match /mappings/{mappingId} {
       allow read: if request.auth != null && isUserActive();
       allow write: if isAdmin() && isUserActive();
     }
-    
+
     // Trainer Profiles collection - Admin only
     match /trainer_profiles/{profileId} {
       // Only admins can read trainer profiles

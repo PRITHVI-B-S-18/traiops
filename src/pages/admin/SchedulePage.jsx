@@ -17,10 +17,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { getClientsWithPMs } from '../../utils/firestoreClients';
 import { getUsersByRole } from '../../utils/firestoreUsers';
 import { cancelPendingRequestsForTask } from '../../utils/firestoreClockRequests';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../../firebase';
 import { pdf, Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
 import { cn } from '@/lib/utils';
 import { cardStyles, sectionSpacing, cardPadding, getChipClasses } from '@/styles/designSystem';
 import { LoadingSkeleton } from '@/components/ui/loading-skeletons';
+import FilterPanelSelect from '@/components/ui/FilterPanelSelect';
+import SearchableSelect from '@/components/ui/SearchableSelect';
 import { getDatesInRange as getDatesInRangeTZ, convertToUTC, convertFromUTC, getCurrentDateInUserTimezone, isValidDateString, compareDateStrings, formatDateForDisplay } from '@/utils/timezoneUtils';
 
 // Modal animation variants - matching Dialog component animations
@@ -135,6 +139,19 @@ const SchedulePage = () => {
   const [taskType, setTaskType] = useState('Question creation');
   const [leaveReason, setLeaveReason] = useState('');
   const [trainerList, setTrainerList] = useState([]);
+  const [techStacks, setTechStacks] = useState([]);
+  const [techStackDropdownOpen, setTechStackDropdownOpen] = useState(false);
+  const [techStackSearchTerm, setTechStackSearchTerm] = useState('');
+  const [selectedTechStacks, setSelectedTechStacks] = useState([]);
+  const techStackDropdownRef = useRef(null);
+  const [editTechStackDropdownOpen, setEditTechStackDropdownOpen] = useState(false);
+  const [editTechStackSearchTerm, setEditTechStackSearchTerm] = useState('');
+  const editTechStackDropdownRef = useRef(null);
+  const [availabilitySelectedDates, setAvailabilitySelectedDates] = useState([]);
+  const [availabilityDateInput, setAvailabilityDateInput] = useState('');
+  const [availabilitySelectedTechStacks, setAvailabilitySelectedTechStacks] = useState([]);
+  const [availabilityTechStackSearch, setAvailabilityTechStackSearch] = useState('');
+  const [isAvailabilityModalOpen, setIsAvailabilityModalOpen] = useState(false);
   const [selectedTrainer, setSelectedTrainer] = useState('');
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [viewMode, setViewMode] = useState('matrix'); // 'calendar' or 'matrix'
@@ -158,11 +175,15 @@ const SchedulePage = () => {
     customEndDate: '',
     includeTraining: true,
     includeNonTraining: true,
+    includeAvailable: true,
     taskTypes: {
       training: true,
       nonTraining: true,
       course: true,
       client: true,
+      techStack: true,
+      batchCount: true,
+      learnerCount: true,
       task: true,
       description: true
     },
@@ -595,6 +616,25 @@ const SchedulePage = () => {
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (
+        techStackDropdownRef.current &&
+        !techStackDropdownRef.current.contains(event.target)
+      ) {
+        setTechStackDropdownOpen(false);
+      }
+      if (
+        editTechStackDropdownRef.current &&
+        !editTechStackDropdownRef.current.contains(event.target)
+      ) {
+        setEditTechStackDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (
         trainerTriggerRef.current && !trainerTriggerRef.current.contains(event.target) &&
         trainerDropdownContentRef.current && !trainerDropdownContentRef.current.contains(event.target)
         ) {
@@ -620,6 +660,23 @@ const SchedulePage = () => {
       setAllPMs(pmsData || []); // Cache all PMs for instant filtering
     }
     fetchData();
+  }, []);
+
+  useEffect(() => {
+    const fetchTechStacks = async () => {
+      try {
+        const docRef = doc(db, 'settings', 'techStacks');
+        const snapshot = await getDoc(docRef);
+        const storedStacks = snapshot.exists() ? snapshot.data()?.values : [];
+        const normalized = Array.isArray(storedStacks)
+          ? storedStacks.filter(Boolean)
+          : [];
+        setTechStacks(normalized);
+      } catch (error) {
+        console.error('Error loading tech stacks:', error);
+      }
+    };
+    fetchTechStacks();
   }, []);
 
 
@@ -651,30 +708,29 @@ const SchedulePage = () => {
     return trainerList.filter(trainer => trainer.status !== 'Inactive');
   }, [trainerList]);
 
-  // Use memo to get unique specializations, clients, and courses for filter options
-  const uniqueSpecializations = useMemo(() => {
-    const specs = new Set();
-    activeTrainers.forEach(trainer => {
-      const addSpecializations = (specializationString) => {
-        if (specializationString) {
-          // Split by comma, then trim and filter empty strings
-          specializationString.split(/\s*,\s*/).forEach(spec => {
-            const trimmedSpec = spec.trim();
-            if (trimmedSpec) {
-              specs.add(trimmedSpec.toLowerCase()); // Convert to lowercase before adding to Set
-            }
-          });
-        }
-      };
-      addSpecializations(trainer.specialization);
-      addSpecializations(trainer.skill);
-    });
-    // Convert to array, sort, and convert to title case for consistent display
-    return Array.from(specs).sort((a, b) => a.localeCompare(b)).map(spec => {
-      if (spec.length === 0) return spec;
-      return spec.charAt(0).toUpperCase() + spec.slice(1).toLowerCase();
-    });
-  }, [activeTrainers]);
+  // Use only managed tech stacks from Firestore (Manage Tech Stack) everywhere
+  const techStackOptions = useMemo(() => [...(techStacks || [])].sort(), [techStacks]);
+
+  const editTechStackOptions = useMemo(() => [...(techStackOptions || [])], [techStackOptions]);
+
+  const filteredTechStackOptions = useMemo(() => {
+    const term = techStackSearchTerm.trim().toLowerCase();
+    if (!term) return techStackOptions;
+    return techStackOptions.filter((stack) =>
+      stack.toLowerCase().includes(term)
+    );
+  }, [techStackOptions, techStackSearchTerm]);
+
+  const filteredEditTechStackOptions = useMemo(() => {
+    const term = editTechStackSearchTerm.trim().toLowerCase();
+    if (!term) return editTechStackOptions;
+    return editTechStackOptions.filter((stack) =>
+      stack.toLowerCase().includes(term)
+    );
+  }, [editTechStackOptions, editTechStackSearchTerm]);
+
+  // Use only managed tech stacks for specialization filter options (same list as Manage Tech Stack)
+  const uniqueSpecializations = useMemo(() => [...(techStacks || [])].sort((a, b) => (a || '').localeCompare(b || '')), [techStacks]);
 
   const daysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
   const firstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
@@ -840,6 +896,70 @@ const SchedulePage = () => {
     return getTrainerCategories(selectedDate);
   }, [selectedDate, getTrainerCategories]);
 
+  const availabilityTechStackOptions = useMemo(() => {
+    const base = [...techStackOptions];
+    const hasUnspecified = activeTrainers.some(
+      trainer => !(trainer.specialization || trainer.skill || '').trim()
+    );
+    if (hasUnspecified) base.push('Not specified');
+    return Array.from(new Set(base)).sort((a, b) => a.localeCompare(b));
+  }, [techStackOptions, activeTrainers]);
+
+  const availabilityFilteredTechStacks = useMemo(() => {
+    const term = availabilityTechStackSearch.trim().toLowerCase();
+    if (!term) return availabilityTechStackOptions;
+    return availabilityTechStackOptions.filter(stack => stack.toLowerCase().includes(term));
+  }, [availabilityTechStackOptions, availabilityTechStackSearch]);
+
+  const availabilitySelectedDatesSorted = useMemo(() => {
+    return [...availabilitySelectedDates].filter(Boolean).sort(compareDateStrings);
+  }, [availabilitySelectedDates]);
+
+  const availabilityTrainerResults = useMemo(() => {
+    if (availabilitySelectedDatesSorted.length === 0) return [];
+
+    const availableNames = new Set(activeTrainers.map(trainer => trainer.name));
+    availabilitySelectedDatesSorted.forEach((dateStr) => {
+      const dateStrUTC = convertToUTC(dateStr);
+      const assignedNames = new Set();
+
+      flattenedScheduleData.forEach(entry => {
+        if (!entry.startDate || !entry.endDate) return;
+        if (dateStrUTC < entry.startDate || dateStrUTC > entry.endDate) return;
+
+        if (entry.type === 'training' && entry.client !== 'Not Alloted') {
+          assignedNames.add(entry.trainer);
+        } else if (entry.type === 'non-training' && entry.taskDetails && entry.taskDetails !== 'Not Alloted') {
+          assignedNames.add(entry.trainer);
+        } else if (entry.type === 'leave') {
+          assignedNames.add(entry.trainer);
+        }
+      });
+
+      assignedNames.forEach(name => availableNames.delete(name));
+    });
+
+    const selectedStackSet = new Set(
+      availabilitySelectedTechStacks.map(stack => stack.toLowerCase())
+    );
+
+    return activeTrainers.filter((trainer) => {
+      if (!availableNames.has(trainer.name)) return false;
+
+      if (selectedStackSet.size === 0) return true;
+      const rawStacks = (trainer.specialization || trainer.skill || '').trim();
+      const stacks = rawStacks
+        ? rawStacks.split(/\s*,\s*/).map(stack => stack.trim()).filter(Boolean)
+        : ['Not specified'];
+      return stacks.some(stack => selectedStackSet.has(stack.toLowerCase()));
+    });
+  }, [
+    availabilitySelectedDatesSorted,
+    availabilitySelectedTechStacks,
+    activeTrainers,
+    flattenedScheduleData
+  ]);
+
   const startEditTask = (entry, date) => {
     console.log('startEditTask Debug:', { entry, date });
     
@@ -847,6 +967,8 @@ const SchedulePage = () => {
     setEditingTask({ ...entry, date });
     setEditingForm({ ...entry, type: entry.type }); // Ensure type is explicitly set
     setOriginalTaskType(entry.type); // Store the original task type
+    setEditTechStackDropdownOpen(false);
+    setEditTechStackSearchTerm('');
     
     console.log('Setting originalTaskType to:', entry.type);
     
@@ -866,6 +988,8 @@ const SchedulePage = () => {
     setExcludedDates([]);
     setBulkEditDateRange({ startDate: '', endDate: '' });
     setSendEmailOnUpdate(true); // Reset to default
+    setEditTechStackDropdownOpen(false);
+    setEditTechStackSearchTerm('');
   };
 
   const saveEditTask = async (e) => {
@@ -1137,6 +1261,9 @@ const SchedulePage = () => {
 
   const openAllocateModal = (prefilledDate = null) => {
     setIsEditModalOpen(false);
+    setSelectedTechStacks([]);
+    setTechStackSearchTerm('');
+    setTechStackDropdownOpen(false);
     if (prefilledDate) {
       setSelectedDate(prefilledDate);
       // Initialize selectedDateRange with the prefilled date
@@ -1171,12 +1298,27 @@ const SchedulePage = () => {
     let clientDisplayName = 'N/A';
     
     if (scheduleType === 'training') {
-      // Get selected client and PMs
-      const clientId = selectedClient || form.client.value;
+      // Get selected client and PMs (use state: role, selectedClient — no longer from form DOM)
+      const clientId = selectedClient;
       const client = clientsWithPMs.find(c => c.clientId === clientId);
-      const clientOptionText =
-        form.client?.options?.[form.client.selectedIndex]?.text || '';
-      clientDisplayName = client?.name || resolveClientName(clientId, clientOptionText);
+      clientDisplayName = client?.name || resolveClientName(clientId, '');
+      
+      if (!clientId || !client) {
+        toast({
+          title: 'Error',
+          description: 'Please select a client.',
+          variant: 'destructive'
+        });
+        return;
+      }
+      if (!role) {
+        toast({
+          title: 'Error',
+          description: 'Please select a role.',
+          variant: 'destructive'
+        });
+        return;
+      }
       
       // Validate PM selection
       if (selectedPMs.length === 0) {
@@ -1192,11 +1334,14 @@ const SchedulePage = () => {
         startDate: selectedDateRange.startDate,
         endDate: selectedDateRange.endDate,
         trainer: trainerName,
-        role: form.role.value,
+        role: role || (form.role?.value ?? ''),
         client: clientDisplayName,
         clientId: client?.clientId || null,
-        course: form.course.value,
-        description: form.description.value,
+        course: form.course?.value ?? '',
+        techStack: form.techStack?.value ?? '',
+        batchCount: form.batchCount?.value ?? '',
+        learnerCount: form.learnerCount?.value ?? '',
+        description: form.description?.value ?? '',
         type: 'training',
         id: Date.now(),
         excludedDates: selectedDateRange.excludedDates || [],
@@ -1218,9 +1363,9 @@ const SchedulePage = () => {
         startDate: selectedDateRange.startDate,
         endDate: selectedDateRange.endDate,
         trainer: trainerName,
-        taskDetails: form.taskDetails.value,
-        description: form.description.value,
-        taskType: form.taskType.value,
+        taskDetails: form.taskDetails?.value ?? '',
+        description: form.description?.value ?? '',
+        taskType: form.taskType?.value ?? '',
         type: 'non-training',
         id: Date.now(),
         excludedDates: selectedDateRange.excludedDates || []
@@ -1350,7 +1495,10 @@ const SchedulePage = () => {
           endDate: validDates[validDates.length - 1],
           client: clientDisplayName || 'N/A',
           course: form.course?.value || 'N/A',
-          role: form.role?.value || 'N/A',
+          role: role || form.role?.value || 'N/A',
+          techStack: form.techStack?.value || 'N/A',
+          batchCount: form.batchCount?.value || 'N/A',
+          learnerCount: form.learnerCount?.value || 'N/A',
           taskDetails: form.taskDetails?.value || 'N/A',
           taskType: form.taskType?.value || 'N/A',
           description: form.description?.value || 'N/A',
@@ -1431,6 +1579,9 @@ const SchedulePage = () => {
                         <p className="text-sm text-gray-600">Course: {event.course}</p>
                         <p className="text-sm text-gray-600">Client: {event.client}</p>
                         <p className="text-sm text-gray-600">Role: {event.role}</p>
+                        {event.techStack && <p className="text-sm text-gray-600">Tech Stack: {event.techStack}</p>}
+                        {event.batchCount && <p className="text-sm text-gray-600">No. of Batches: {event.batchCount}</p>}
+                        {event.learnerCount && <p className="text-sm text-gray-600">No. of Learners: {event.learnerCount}</p>}
                         <p className="text-sm text-gray-600">Description: {event.description}</p>
                       </>
                     ) : event.type === 'leave' ? (
@@ -1598,15 +1749,19 @@ const SchedulePage = () => {
     setSelectedTrainer(''); // Reset trainer
     setTrainerSearchTerm(''); // Reset search
     setIsTrainerDropdownOpen(false); // Close dropdown
+    setSelectedTechStacks([]);
+    setTechStackSearchTerm('');
+    setTechStackDropdownOpen(false);
   }, []);
 
   const handleScheduleSubmit = async (e) => {
     e.preventDefault();
     const form = e.target;
     let newEntry;
-    // Normalize trainer name
-    const selectedTrainerObj = trainerList.find(t => t.name === (form.trainer.value || selectedTrainer));
-    const trainerName = selectedTrainerObj ? selectedTrainerObj.name : (form.trainer.value || selectedTrainer);
+    // Normalize trainer name (trainer input may still be in form; fallback to state)
+    const trainerValue = form.trainer?.value ?? selectedTrainer;
+    const selectedTrainerObj = trainerList.find(t => t.name === trainerValue);
+    const trainerName = selectedTrainerObj ? selectedTrainerObj.name : trainerValue;
 
     // Get all dates in range excluding the excluded dates
     const startDate = parseLocalDate(selectedDateRange.startDate);
@@ -1665,16 +1820,17 @@ const SchedulePage = () => {
       // Case 2: Partial overlap (some dates conflict, some are free)
       const conflictingSampleTask = Object.values(existingTasksForTrainer)[0];
       const isSameTaskType = scheduleType === conflictingSampleTask?.type;
+      const trainingClientName = selectedClient ? (clientsWithPMs.find(c => c.clientId === selectedClient)?.name) : '';
       const canExtendTask = isSameTaskType && (
         scheduleType === 'training' 
-          ? (form.client.value === conflictingSampleTask.client && 
-             form.course.value === conflictingSampleTask.course && 
-             form.role.value === conflictingSampleTask.role)
+          ? (trainingClientName === conflictingSampleTask.client && 
+             (form.course?.value ?? '') === conflictingSampleTask.course && 
+             (role || form.role?.value || '') === conflictingSampleTask.role)
           : scheduleType === 'leave'
           ? true
           : (scheduleType === 'non-training' && 
-             form.taskDetails.value === conflictingSampleTask.taskDetails && 
-             form.taskType.value === conflictingSampleTask.taskType)
+             (form.taskDetails?.value ?? '') === conflictingSampleTask.taskDetails && 
+             (form.taskType?.value ?? '') === conflictingSampleTask.taskType)
       );
 
       let userChoice;
@@ -1811,11 +1967,14 @@ const SchedulePage = () => {
           startDate: date,
           endDate: date,
           trainer: trainerName,
-          role: form.role.value,
+          role: (role || form.role?.value) ?? '',
           client: client.name,
           clientId: client.clientId,
-          course: form.course.value,
-          description: form.description.value,
+          course: form.course?.value ?? '',
+          techStack: form.techStack?.value ?? '',
+          batchCount: form.batchCount?.value ?? '',
+          learnerCount: form.learnerCount?.value ?? '',
+          description: form.description?.value ?? '',
           type: 'training',
           id: Date.now() + Math.random(),
           // Use selected PMs (not all PMs of client)
@@ -1835,9 +1994,9 @@ const SchedulePage = () => {
           startDate: date,
           endDate: date,
           trainer: trainerName,
-          taskDetails: form.taskDetails.value,
-          description: form.description.value,
-          taskType: form.taskType.value,
+          taskDetails: form.taskDetails?.value ?? '',
+          description: form.description?.value ?? '',
+          taskType: form.taskType?.value ?? '',
           type: 'non-training',
           id: Date.now() + Math.random()
         };
@@ -1872,9 +2031,12 @@ const SchedulePage = () => {
             startDate: dates[0],
             endDate: dates[dates.length - 1],
             client: clientNameForEmail,
-            course: form.course.value,
-            role: form.role.value,
-            description: form.description.value,
+            course: form.course?.value ?? '',
+            role: (role || form.role?.value) ?? '',
+            techStack: form.techStack?.value ?? '',
+            batchCount: form.batchCount?.value ?? '',
+            learnerCount: form.learnerCount?.value ?? '',
+            description: form.description?.value ?? '',
             excludedDates: selectedDateRange.excludedDates || []
           };
           await notifyScheduleCreated(sampleEntry);
@@ -1883,9 +2045,9 @@ const SchedulePage = () => {
             trainer: trainerName,
             startDate: dates[0],
             endDate: dates[dates.length - 1],
-            taskDetails: form.taskDetails.value,
-            taskType: form.taskType.value,
-            description: form.description.value,
+            taskDetails: form.taskDetails?.value ?? '',
+            taskType: form.taskType?.value ?? '',
+            description: form.description?.value ?? '',
             excludedDates: selectedDateRange.excludedDates || []
           };
           await notifyNonTrainingCreated(sampleEntry);
@@ -2094,6 +2256,9 @@ const SchedulePage = () => {
         if (taskTypes.course) trainingHeaders.push(`${date} - Course`);
         if (taskTypes.client) trainingHeaders.push(`${date} - Client`);
         if (taskTypes.training) trainingHeaders.push(`${date} - TA/Trainer`);
+        if (taskTypes.techStack) trainingHeaders.push(`${date} - Tech Stack`);
+        if (taskTypes.batchCount) trainingHeaders.push(`${date} - No. of Batches`);
+        if (taskTypes.learnerCount) trainingHeaders.push(`${date} - No. of Learners`);
         if (taskTypes.description) trainingHeaders.push(`${date} - Description`);
       });
 
@@ -2104,6 +2269,9 @@ const SchedulePage = () => {
           if (taskTypes.course) row[`${date} - Course`] = entry ? (entry.course || 'Not Alloted') : 'Not Alloted';
           if (taskTypes.client) row[`${date} - Client`] = entry ? (entry.client || 'Not Alloted') : 'Not Alloted';
           if (taskTypes.training) row[`${date} - TA/Trainer`] = entry ? (entry.role || 'Not Alloted') : 'Not Alloted';
+          if (taskTypes.techStack) row[`${date} - Tech Stack`] = entry ? (entry.techStack || 'Not Alloted') : 'Not Alloted';
+          if (taskTypes.batchCount) row[`${date} - No. of Batches`] = entry ? (entry.batchCount || 'Not Alloted') : 'Not Alloted';
+          if (taskTypes.learnerCount) row[`${date} - No. of Learners`] = entry ? (entry.learnerCount || 'Not Alloted') : 'Not Alloted';
           if (taskTypes.description) row[`${date} - Description`] = entry ? (entry.description || 'Not Alloted') : 'Not Alloted';
         });
         return row;
@@ -2262,6 +2430,16 @@ const SchedulePage = () => {
                 />
                 Include Non-Training Schedule
               </label>
+              <label className="flex items-center gap-2">
+                <input 
+                  id="export-include-available"
+                  name="export-include-available"
+                  type="checkbox" 
+                  checked={exportFilters.includeAvailable}
+                  onChange={(e) => setExportFilters(f => ({ ...f, includeAvailable: e.target.checked }))}
+                />
+                Include Available Schedule
+              </label>
             </div>
           </div>
 
@@ -2308,6 +2486,45 @@ const SchedulePage = () => {
                     }))}
                   />
                   TA/Trainer Role
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    id="export-task-type-tech-stack"
+                    name="export-task-type-tech-stack"
+                    type="checkbox"
+                    checked={exportFilters.taskTypes.techStack}
+                    onChange={(e) => setExportFilters(f => ({
+                      ...f,
+                      taskTypes: { ...f.taskTypes, techStack: e.target.checked }
+                    }))}
+                  />
+                  Tech Stack
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    id="export-task-type-batch-count"
+                    name="export-task-type-batch-count"
+                    type="checkbox"
+                    checked={exportFilters.taskTypes.batchCount}
+                    onChange={(e) => setExportFilters(f => ({
+                      ...f,
+                      taskTypes: { ...f.taskTypes, batchCount: e.target.checked }
+                    }))}
+                  />
+                  No. of Batches
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    id="export-task-type-learner-count"
+                    name="export-task-type-learner-count"
+                    type="checkbox"
+                    checked={exportFilters.taskTypes.learnerCount}
+                    onChange={(e) => setExportFilters(f => ({
+                      ...f,
+                      taskTypes: { ...f.taskTypes, learnerCount: e.target.checked }
+                    }))}
+                  />
+                  No. of Learners
                 </label>
               </div>
             </div>
@@ -2428,7 +2645,7 @@ const SchedulePage = () => {
   }, []);
 
   const buildScheduleExportRows = () => {
-    const { dateRange, includeTraining, includeNonTraining, showOnlyScheduled, selectedTrainers } = exportFilters;
+    const { dateRange, includeTraining, includeNonTraining, includeAvailable, showOnlyScheduled, selectedTrainers } = exportFilters;
     const { start, end } = getDateRange(dateRange);
     const trainerFilter = new Set((selectedTrainers || []).filter(Boolean));
 
@@ -2440,7 +2657,7 @@ const SchedulePage = () => {
       return true;
     };
 
-    return flattenedScheduleData
+    const assignmentRows = flattenedScheduleData
       .filter((entry) => {
         if (!entry.trainer) return false;
         if (trainerFilter.size > 0 && !trainerFilter.has(entry.trainer)) return false;
@@ -2453,7 +2670,10 @@ const SchedulePage = () => {
             entry.course ||
             entry.taskDetails ||
             entry.taskType ||
-            entry.role
+            entry.role ||
+            entry.techStack ||
+            entry.batchCount ||
+            entry.learnerCount
           );
           if (!hasAssignment) return false;
         }
@@ -2465,6 +2685,9 @@ const SchedulePage = () => {
         client: entry.client || '',
         course: entry.course || '',
         role: entry.role || '',
+        techStack: entry.techStack || '',
+        batchCount: entry.batchCount || '',
+        learnerCount: entry.learnerCount || '',
         taskDetails: entry.taskDetails || '',
         taskType: entry.taskType || '',
         description: entry.description || '',
@@ -2472,6 +2695,49 @@ const SchedulePage = () => {
         endDate: entry.endDate || entry.date || '',
         specialization: entry.specialization || ''
       }));
+
+    if (!includeAvailable) return assignmentRows;
+
+    let filteredDates = dateRange === 'all' ? Object.keys(scheduleData) : getAllDatesInRange(start, end);
+    filteredDates = [...new Set(filteredDates)].sort();
+    let allTrainers = (trainerList || []).map((t) => t.name).filter(Boolean);
+    if (trainerFilter.size > 0) allTrainers = allTrainers.filter((n) => trainerFilter.has(n));
+
+    const hasEntryOnDate = (trainerName, date) =>
+      flattenedScheduleData.some(
+        (entry) =>
+          entry.trainer === trainerName &&
+          date >= (entry.startDate || entry.date) &&
+          date <= (entry.endDate || entry.startDate || entry.date)
+      );
+
+    const availableRows = [];
+    allTrainers.forEach((trainerName) => {
+      filteredDates.forEach((date) => {
+        if (!hasEntryOnDate(trainerName, date)) {
+          availableRows.push({
+            trainer: trainerName,
+            type: 'Available',
+            client: '',
+            course: '',
+            role: '',
+            techStack: '',
+            batchCount: '',
+            learnerCount: '',
+            taskDetails: '',
+            taskType: '',
+            description: '',
+            startDate: date,
+            endDate: date,
+            specialization: ''
+          });
+        }
+      });
+    });
+
+    return [...assignmentRows, ...availableRows].sort(
+      (a, b) => (a.trainer || '').localeCompare(b.trainer || '') || (a.startDate || '').localeCompare(b.startDate || '')
+    );
   };
 
   const downloadBlob = (blob, filename) => {
@@ -2491,12 +2757,15 @@ const SchedulePage = () => {
     { key: 'client', label: 'Client' },
     { key: 'course', label: 'Course' },
     { key: 'role', label: 'Role' },
+    { key: 'techStack', label: 'Tech Stack' },
+    { key: 'batchCount', label: 'No. of Batches' },
+    { key: 'learnerCount', label: 'No. of Learners' },
     { key: 'taskDetails', label: 'Task Details' },
     { key: 'taskType', label: 'Task Type' },
     { key: 'description', label: 'Description' },
     { key: 'startDate', label: 'Start Date' },
     { key: 'endDate', label: 'End Date' },
-    { key: 'specialization', label: 'Specialization' }
+    { key: 'specialization', label: 'Tech Stack' }
   ];
 
   const downloadScheduleCSV = (rows) => {
@@ -2510,7 +2779,9 @@ const SchedulePage = () => {
       lines.push(scheduleCsvHeaders.map((h) => escapeCSV(row[h.key])).join(','));
     });
 
-    const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8;' });
+    // Use CRLF for Excel compatibility; BOM for UTF-8 recognition
+    const csvContent = `\uFEFF${lines.join('\r\n')}`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     downloadBlob(blob, `schedule_export_${Date.now()}.csv`);
   };
 
@@ -2572,6 +2843,24 @@ const SchedulePage = () => {
                 {row.role}
               </Text>
             ) : null}
+            {row.techStack ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>Tech Stack: </Text>
+                {row.techStack}
+              </Text>
+            ) : null}
+            {row.batchCount ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>No. of Batches: </Text>
+                {row.batchCount}
+              </Text>
+            ) : null}
+            {row.learnerCount ? (
+              <Text style={schedulePdfStyles.row}>
+                <Text style={schedulePdfStyles.label}>No. of Learners: </Text>
+                {row.learnerCount}
+              </Text>
+            ) : null}
             {row.taskDetails ? (
               <Text style={schedulePdfStyles.row}>
                 <Text style={schedulePdfStyles.label}>Task: </Text>
@@ -2610,87 +2899,90 @@ const SchedulePage = () => {
   };
 
   const downloadSummaryExcel = () => {
-    // Get all dates in the selected range (use export modal filters if needed)
-    const { dateRange, showOnlyScheduled } = exportFilters;
+    const { dateRange, showOnlyScheduled, includeTraining, includeNonTraining, includeAvailable } = exportFilters;
     const { start, end } = getDateRange(dateRange);
-    let filteredDates = dateRange === 'all' 
+    let filteredDates = dateRange === 'all'
       ? Object.keys(scheduleData)
       : getAllDatesInRange(start, end);
-    filteredDates.sort();
+    filteredDates = [...new Set(filteredDates)].sort();
 
-    // Get all trainers from trainerList instead of just those with tasks
-    let trainers = trainerList.map(trainer => trainer.name);
+    let trainers = (trainerList || []).map((trainer) => trainer.name).filter(Boolean);
     if (exportFilters.selectedTrainers.length > 0) {
       trainers = trainers.filter((name) => exportFilters.selectedTrainers.includes(name));
     }
 
-    // Helper to get training entry for a trainer and date
+    const allEntries = (Object.values(scheduleData || {}).filter(Array.isArray).flat() || []);
+
     const getTrainingEntry = (date, trainerName) => {
-      const entries = Object.entries(scheduleData).find(([d, entries]) => {
-        return entries.some(e => 
-          e.trainer === trainerName && 
-          e.type === 'training' &&
-          date >= e.startDate && 
-          date <= e.endDate
-        );
-      })?.[1]?.filter(e => e.trainer === trainerName && e.type === 'training' && date >= e.startDate && date <= e.endDate) || [];
-      const training = entries[0];
+      const training = allEntries.find((e) => e.trainer === trainerName && e.type === 'training' && date >= (e.startDate || e.date) && date <= (e.endDate || e.startDate || e.date));
       if (training) return `${training.client || ''}-${training.course || ''}-${training.role || ''}${training.description ? ` (${training.description})` : ''}`;
       return 'Not Alloted';
     };
 
-    // Helper to get non-training entry for a trainer and date
     const getNonTrainingEntry = (date, trainerName) => {
-      const entries = Object.entries(scheduleData).find(([d, entries]) => {
-        return entries.some(e => 
-          e.trainer === trainerName && 
-          e.type === 'non-training' &&
-          date >= e.startDate && 
-          date <= e.endDate
-        );
-      })?.[1]?.filter(e => e.trainer === trainerName && e.type === 'non-training' && date >= e.startDate && date <= e.endDate) || [];
-      const nonTraining = entries[0];
+      const nonTraining = allEntries.find((e) => e.trainer === trainerName && e.type === 'non-training' && date >= (e.startDate || e.date) && date <= (e.endDate || e.startDate || e.date));
       if (nonTraining) return `${nonTraining.taskType || ''}-${nonTraining.taskDetails || ''}${nonTraining.description ? ` (${nonTraining.description})` : ''}`;
       return 'Not Alloted';
     };
 
-    // Build headers
+    const hasEntryOnDate = (trainerName, date) =>
+      allEntries.some((e) => e.trainer === trainerName && date >= (e.startDate || e.date) && date <= (e.endDate || e.startDate || e.date));
+
     const headers = ['Trainer Name', ...filteredDates];
-
-    // Build training rows
-    const trainingRows = trainers.map(trainerName => {
-      const row = { 'Trainer Name': trainerName };
-      filteredDates.forEach(date => {
-        row[date] = getTrainingEntry(date, trainerName);
-      });
-      return row;
-    }).filter(row => {
-      if (!showOnlyScheduled) return true;
-      // For scheduled tasks only, filter out rows where all dates are "Not Alloted"
-      return Object.entries(row).some(([key, value]) => key !== 'Trainer Name' && value !== 'Not Alloted');
-    });
-
-    // Build non-training rows
-    const nonTrainingRows = trainers.map(trainerName => {
-      const row = { 'Trainer Name': trainerName };
-      filteredDates.forEach(date => {
-        row[date] = getNonTrainingEntry(date, trainerName);
-      });
-      return row;
-    }).filter(row => {
-      if (!showOnlyScheduled) return true;
-      // For scheduled tasks only, filter out rows where all dates are "Not Alloted"
-      return Object.entries(row).some(([key, value]) => key !== 'Trainer Name' && value !== 'Not Alloted');
-    });
-
-    // Write to Excel
-    const trainingSheet = XLSX.utils.json_to_sheet(trainingRows, { header: headers });
-    const nonTrainingSheet = XLSX.utils.json_to_sheet(nonTrainingRows, { header: headers });
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, trainingSheet, 'Training Schedule');
-    XLSX.utils.book_append_sheet(workbook, nonTrainingSheet, 'Non-Training Schedule');
+
+    if (includeTraining) {
+      const trainingRows = trainers
+        .map((trainerName) => {
+          const row = { 'Trainer Name': trainerName };
+          filteredDates.forEach((date) => {
+            row[date] = getTrainingEntry(date, trainerName);
+          });
+          return row;
+        })
+        .filter((row) => {
+          if (!showOnlyScheduled) return true;
+          return Object.entries(row).some(([key, value]) => key !== 'Trainer Name' && value !== 'Not Alloted');
+        });
+      const trainingSheet = XLSX.utils.json_to_sheet(trainingRows, { header: headers });
+      XLSX.utils.book_append_sheet(workbook, trainingSheet, 'Training Schedule');
+    }
+
+    if (includeNonTraining) {
+      const nonTrainingRows = trainers
+        .map((trainerName) => {
+          const row = { 'Trainer Name': trainerName };
+          filteredDates.forEach((date) => {
+            row[date] = getNonTrainingEntry(date, trainerName);
+          });
+          return row;
+        })
+        .filter((row) => {
+          if (!showOnlyScheduled) return true;
+          return Object.entries(row).some(([key, value]) => key !== 'Trainer Name' && value !== 'Not Alloted');
+        });
+      const nonTrainingSheet = XLSX.utils.json_to_sheet(nonTrainingRows, { header: headers });
+      XLSX.utils.book_append_sheet(workbook, nonTrainingSheet, 'Non-Training Schedule');
+    }
+
+    if (includeAvailable) {
+      const availableRows = trainers.map((trainerName) => {
+        const row = { 'Trainer Name': trainerName };
+        filteredDates.forEach((date) => {
+          row[date] = hasEntryOnDate(trainerName, date) ? '' : 'Available';
+        });
+        return row;
+      });
+      const availableSheet = XLSX.utils.json_to_sheet(availableRows, { header: headers });
+      XLSX.utils.book_append_sheet(workbook, availableSheet, 'Available Schedule');
+    }
+
+    if (workbook.SheetNames.length === 0) {
+      toast({ title: 'Nothing to export', description: 'Select at least one schedule type.', variant: 'destructive' });
+      return;
+    }
     XLSX.writeFile(workbook, 'TrainerSchedule.xlsx');
-    toast({ title: "Success", description: "Summary schedule exported with separate sheets." });
+    toast({ title: 'Success', description: 'Summary schedule exported with selected sheets.' });
     setIsExportModalOpen(false);
   };
 
@@ -2925,7 +3217,7 @@ const SchedulePage = () => {
         >
           <div className="min-w-0">
             <p className={`font-semibold ${accentTokens[section.accent].textPrimary} truncate`}>{trainer.name}</p>
-            <p className="text-xs text-gray-600 mt-0.5">Specialization: {trainer.specialization || 'Not specified'}</p>
+            <p className="text-xs text-gray-600 mt-0.5">Tech Stack: {trainer.specialization || 'Not specified'}</p>
           </div>
           <Button
             onClick={() => {
@@ -2963,6 +3255,9 @@ const SchedulePage = () => {
                    <div className="flex items-center gap-1"><span className="text-gray-400">Client:</span><span className="font-medium text-gray-700">{entry.client}</span></div>
                    <div className="flex items-center gap-1"><span className="text-gray-400">Course:</span><span className="font-medium text-gray-700">{entry.course}</span></div>
                    {entry.role && <div className="flex items-center gap-1"><span className="text-gray-400">Role:</span><span className="font-medium text-gray-700">{entry.role}</span></div>}
+                  {entry.techStack && <div className="flex items-center gap-1"><span className="text-gray-400">Tech Stack:</span><span className="font-medium text-gray-700">{entry.techStack}</span></div>}
+                  {entry.batchCount && <div className="flex items-center gap-1"><span className="text-gray-400">No. of Batches:</span><span className="font-medium text-gray-700">{entry.batchCount}</span></div>}
+                  {entry.learnerCount && <div className="flex items-center gap-1"><span className="text-gray-400">No. of Learners:</span><span className="font-medium text-gray-700">{entry.learnerCount}</span></div>}
                    {entry.description && <div className="text-gray-500">Notes: {entry.description}</div>}
                  </>
                ) : section.key === 'leave' ? (
@@ -3288,7 +3583,9 @@ const SchedulePage = () => {
             Next
           </button>
         </div>
-        {viewMode === 'calendar' ? (
+        <div className="flex flex-col xl:flex-row gap-6">
+          <div className="flex-1 min-w-0">
+            {viewMode === 'calendar' ? (
           <>
             {/* Legend for calendar view */}
             <div className="flex flex-wrap gap-6 mb-4">
@@ -3472,7 +3769,7 @@ const SchedulePage = () => {
                                 onChange={e => setFilterFields(f => ({...f, specialization: e.target.checked}))}
                                 className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
                               /> 
-                              <span className="text-gray-700">Specialization</span>
+                              <span className="text-gray-700">Tech Stack</span>
                             </label>
                           </div>
                         </div>
@@ -3644,39 +3941,227 @@ const SchedulePage = () => {
               </div>
             )}
           </>
-        ) : (
-          <TrainerMatrixView
-            trainers={activeTrainers}
-            scheduleData={scheduleData}
-            flattenedScheduleData={flattenedScheduleData}
-            setScheduleData={setScheduleData}
-            currentYear={currentYear}
-            currentMonth={currentMonth}
-            onScheduleTask={({ trainer, date }) => {
-              setSelectedTrainer(trainer.name);
-              setSelectedDate(date);
-              setLeaveReason('');
-              setIsAllocateModalOpen(true);
-            }}
-            onEditTask={(entry, date) => {
-              startEditTask(entry, date);
-            }}
-            onDeleteEntry={handleDeleteEntry}
-            selectedTaskIds={selectedTaskIds}
-            toggleTaskSelection={toggleTaskSelection}
-            handleBulkDelete={handleBulkDelete}
-            selectAllForDay={selectAllForDay}
-            // New props for matrix filters
-            matrixFilters={matrixFilters}
-            setIsMatrixFilterModalOpen={setIsMatrixFilterModalOpen}
-            uniqueSpecializations={uniqueSpecializations}
-            uniqueClients={uniqueClients}
-            uniqueCourses={uniqueCourses}
-            sidebarCollapsed={sidebarCollapsed}
-            toast={toast}
-          />
-        )}
+            ) : (
+              <TrainerMatrixView
+                trainers={activeTrainers}
+                scheduleData={scheduleData}
+                flattenedScheduleData={flattenedScheduleData}
+                setScheduleData={setScheduleData}
+                currentYear={currentYear}
+                currentMonth={currentMonth}
+                onScheduleTask={({ trainer, date }) => {
+                  setSelectedTrainer(trainer.name);
+                  setSelectedDate(date);
+                  setLeaveReason('');
+                  setIsAllocateModalOpen(true);
+                }}
+                onEditTask={(entry, date) => {
+                  startEditTask(entry, date);
+                }}
+                onDeleteEntry={handleDeleteEntry}
+                selectedTaskIds={selectedTaskIds}
+                toggleTaskSelection={toggleTaskSelection}
+                handleBulkDelete={handleBulkDelete}
+                selectAllForDay={selectAllForDay}
+                // New props for matrix filters
+                matrixFilters={matrixFilters}
+                setIsMatrixFilterModalOpen={setIsMatrixFilterModalOpen}
+                uniqueSpecializations={uniqueSpecializations}
+                uniqueClients={uniqueClients}
+                uniqueCourses={uniqueCourses}
+                onOpenAvailability={() => setIsAvailabilityModalOpen(true)}
+                sidebarCollapsed={sidebarCollapsed}
+                toast={toast}
+              />
+            )}
+          </div>
+        </div>
       </div>
+
+      {isAvailabilityModalOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto relative">
+            <div className="flex items-start justify-between gap-4 pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Trainer Availability</h3>
+                <p className="text-sm text-slate-500">Pick dates and tech stacks to see who is free.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAvailabilityModalOpen(false)}
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                aria-label="Close availability panel"
+              >
+                <X className="w-4 h-4 text-gray-500" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <div>
+                <label className="text-xs font-medium text-slate-600">Dates (multi-select)</label>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={availabilityDateInput}
+                    onChange={(event) => setAvailabilityDateInput(event.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const dateValue = availabilityDateInput.trim();
+                      if (!dateValue || !isValidDateString(dateValue)) return;
+                      setAvailabilitySelectedDates(prev => (
+                        prev.includes(dateValue)
+                          ? prev
+                          : [...prev, dateValue].sort(compareDateStrings)
+                      ));
+                      setAvailabilityDateInput('');
+                    }}
+                  >
+                    Add
+                  </Button>
+                </div>
+                {availabilitySelectedDatesSorted.length === 0 ? (
+                  <p className="mt-2 text-xs text-slate-500">Add one or more dates to check availability.</p>
+                ) : (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {availabilitySelectedDatesSorted.map(dateStr => (
+                      <span
+                        key={dateStr}
+                        className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600"
+                      >
+                        {formatDateForDisplay(dateStr)}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAvailabilitySelectedDates(prev => prev.filter(d => d !== dateStr))
+                          }
+                          className="text-slate-400 hover:text-slate-600"
+                          aria-label={`Remove ${dateStr}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setAvailabilitySelectedDates([])}
+                      className="text-xs text-slate-500 hover:text-slate-700"
+                    >
+                      Clear all
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-600">Tech Stacks (multi-select)</label>
+                <div className="mt-2 relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                    <Search className="w-3 h-3" />
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Search tech stacks..."
+                    value={availabilityTechStackSearch}
+                    onChange={(event) => setAvailabilityTechStackSearch(event.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white pl-8 pr-3 py-1.5 text-xs text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+                <div className="mt-2 max-h-40 overflow-y-auto space-y-1 pr-1">
+                  {availabilityFilteredTechStacks.length === 0 ? (
+                    <p className="text-xs text-slate-500">No tech stacks found.</p>
+                  ) : (
+                    availabilityFilteredTechStacks.map(stack => (
+                      <label
+                        key={stack}
+                        className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer hover:bg-slate-50 px-2 py-1 rounded-lg"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={availabilitySelectedTechStacks.includes(stack)}
+                          onChange={(event) => {
+                            const checked = event.target.checked;
+                            setAvailabilitySelectedTechStacks(prev => (
+                              checked
+                                ? [...prev, stack]
+                                : prev.filter(item => item !== stack)
+                            ));
+                          }}
+                          className="w-3.5 h-3.5 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+                        />
+                        <span className="truncate">{stack}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+                <div className="mt-2 flex items-center gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setAvailabilitySelectedTechStacks(availabilityTechStackOptions)}
+                    className="text-blue-600 hover:text-blue-700"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAvailabilitySelectedTechStacks([])}
+                    className="text-slate-500 hover:text-slate-700"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-600">Available Trainers</label>
+                <div className="mt-2 max-h-64 overflow-y-auto space-y-2">
+                  {availabilitySelectedDatesSorted.length === 0 ? (
+                    <p className="text-xs text-slate-500">Select dates to see available trainers.</p>
+                  ) : availabilityTrainerResults.length === 0 ? (
+                    <p className="text-xs text-slate-500">No available trainers for the selected filters.</p>
+                  ) : (
+                    availabilityTrainerResults.map((trainer, index) => (
+                      <div
+                        key={trainer.id || `${trainer.name}-${index}`}
+                        className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-slate-800 truncate">{trainer.name}</p>
+                          <p className="text-xs text-slate-500 truncate">
+                            {trainer.specialization || trainer.skill || 'Not specified'}
+                          </p>
+                        </div>
+                        <Button
+                          onClick={() => {
+                            if (availabilitySelectedDatesSorted.length === 0) return;
+                            setSelectedTrainer(trainer.name);
+                            setSelectedDate(availabilitySelectedDatesSorted[0]);
+                            setIsAllocateModalOpen(true);
+                          }}
+                          size="sm"
+                          className="bg-green-600 hover:bg-green-700 text-white"
+                        >
+                          <PlusCircle className="w-4 h-4 mr-1" />
+                          Schedule
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {availabilitySelectedDatesSorted.length > 1 && (
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    Showing trainers available on all selected dates.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Allocate Modal */}
       {isAllocateModalOpen && createPortal(
@@ -3851,40 +4336,35 @@ const SchedulePage = () => {
                         <div className="grid grid-cols-3 gap-3">
                             <div>
                             <label className="text-xs font-medium text-gray-700 mb-1.5 block">Role *</label>
-                              <select 
-                                name="role" 
-                                value={role ?? ''} 
-                                onChange={e => setRole(e.target.value)} 
-                                required
-                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
-                              >
-                              <option value="" disabled>Select</option>
-                                <option value="TA">TA</option>
-                                <option value="Trainer">Trainer</option>
-                              </select>
+                              <SearchableSelect
+                                value={role ?? ''}
+                                onChange={(value) => setRole(value)}
+                                options={[
+                                  { value: 'TA', label: 'TA' },
+                                  { value: 'Trainer', label: 'Trainer' }
+                                ]}
+                                placeholder="Select"
+                                searchPlaceholder="Search roles..."
+                              />
                             </div>
                           <div className="col-span-2">
                             <label className="text-xs font-medium text-gray-700 mb-1.5 block">Client *</label>
-                              <select 
-                                name="client" 
-                                required 
+                              <SearchableSelect
                                 value={selectedClient ?? ''}
-                                onChange={(e) => {
-                                  setSelectedClient(e.target.value);
-                                  const client = clientsWithPMs.find(c => c.clientId === e.target.value);
+                                onChange={(value) => {
+                                  setSelectedClient(value);
+                                  const client = clientsWithPMs.find(c => c.clientId === value);
                                   if (client) {
                                     setForm({ ...form, selectedClientData: client });
                                   }
                                 }}
-                              className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors" 
-                              >
-                                <option value="">Select Client</option>
-                                {clientsWithPMs.map(client => (
-                                  <option key={client.clientId} value={client.clientId}>
-                                    {client.name} ({client.programManagerIds?.length || 0} PM{client.programManagerIds?.length !== 1 ? 's' : ''})
-                                  </option>
-                                ))}
-                              </select>
+                                options={clientsWithPMs.map(c => ({
+                                  value: c.clientId,
+                                  label: c.name ? `${c.name} (${c.programManagerIds?.length || 0} PM${c.programManagerIds?.length !== 1 ? 's' : ''})` : c.clientId
+                                }))}
+                                placeholder="Select Client"
+                                searchPlaceholder="Search clients..."
+                              />
                             </div>
                         </div>
                         {/* PM Selection - Instant display with smooth animation */}
@@ -3969,6 +4449,39 @@ const SchedulePage = () => {
                             placeholder="Enter course name"
                             className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors" 
                               />
+                            </div>
+                            <div className="grid grid-cols-3 gap-3">
+                              <div>
+                                <label className="text-xs font-medium text-gray-700 mb-1.5 block">Tech Stack *</label>
+                                <FilterPanelSelect
+                                  title="All tech stacks"
+                                  options={techStackOptions.map(s => ({ value: s, label: s }))}
+                                  selected={selectedTechStacks}
+                                  onChange={setSelectedTechStacks}
+                                  searchPlaceholder="Search tech stacks..."
+                                  emptyLabel="No tech stacks"
+                                />
+                                <input type="hidden" name="techStack" value={selectedTechStacks.join(', ')} required />
+                              </div>
+                              <div>
+                                <label className="text-xs font-medium text-gray-700 mb-1.5 block">No. of Batches</label>
+                                <input
+                                  type="text"
+                                  name="batchCount"
+                                  placeholder="e.g., 2"
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs font-medium text-gray-700 mb-1.5 block">No. of Learners</label>
+                                <input
+                                  type="number"
+                                  name="learnerCount"
+                                  min="0"
+                                  placeholder="e.g., 40"
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
+                                />
+                              </div>
                             </div>
                         
                           <div>
@@ -4407,26 +4920,23 @@ const SchedulePage = () => {
                       <div className="grid grid-cols-3 gap-3">
                         <div>
                           <label className="text-xs font-medium text-gray-700 mb-1.5 block">Role *</label>
-                          <select 
-                            name="role" 
-                            value={role ?? ''} 
-                            onChange={e => setRole(e.target.value)} 
-                            required
-                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
-                          >
-                            <option value="" disabled>Select</option>
-                            <option value="TA">TA</option>
-                            <option value="Trainer">Trainer</option>
-                          </select>
+                          <SearchableSelect
+                            value={role ?? ''}
+                            onChange={(value) => setRole(value)}
+                            options={[
+                              { value: 'TA', label: 'TA' },
+                              { value: 'Trainer', label: 'Trainer' }
+                            ]}
+                            placeholder="Select"
+                            searchPlaceholder="Search roles..."
+                          />
                         </div>
                         <div className="col-span-2">
                           <label className="text-xs font-medium text-gray-700 mb-1.5 block">Client *</label>
-                          <select 
-                            name="client" 
-                            required 
+                          <SearchableSelect
                             value={selectedClient ?? ''}
-                            onChange={(e) => {
-                              const clientId = e.target.value;
+                            onChange={(value) => {
+                              const clientId = value;
                               setSelectedClient(clientId);
                               const client = clientsWithPMs.find(c => c.clientId === clientId);
                               if (client) {
@@ -4436,15 +4946,13 @@ const SchedulePage = () => {
                                 setAvailablePMs([]);
                               }
                             }}
-                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors" 
-                          >
-                            <option value="">Select Client</option>
-                            {clientsWithPMs.map(client => (
-                              <option key={client.clientId} value={client.clientId}>
-                                {client.name} ({client.programManagerIds?.length || 0} PM{client.programManagerIds?.length !== 1 ? 's' : ''})
-                              </option>
-                            ))}
-                          </select>
+                            options={clientsWithPMs.map(client => ({
+                              value: client.clientId,
+                              label: client.name ? `${client.name} (${client.programManagerIds?.length || 0} PM${client.programManagerIds?.length !== 1 ? 's' : ''})` : client.clientId
+                            }))}
+                            placeholder="Select Client"
+                            searchPlaceholder="Search clients..."
+                          />
                         </div>
                       </div>
                       
@@ -4530,6 +5038,39 @@ const SchedulePage = () => {
                           placeholder="Enter course name"
                           className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors" 
                         />
+                      </div>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">Tech Stack *</label>
+                          <FilterPanelSelect
+                            title="All tech stacks"
+                            options={techStackOptions.map(s => ({ value: s, label: s }))}
+                            selected={selectedTechStacks}
+                            onChange={setSelectedTechStacks}
+                            searchPlaceholder="Search tech stacks..."
+                            emptyLabel="No tech stacks"
+                          />
+                          <input type="hidden" name="techStack" value={selectedTechStacks.join(', ')} required />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">No. of Batches</label>
+                          <input
+                            type="text"
+                            name="batchCount"
+                            placeholder="e.g., 2"
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium text-gray-700 mb-1.5 block">No. of Learners</label>
+                          <input
+                            type="number"
+                            name="learnerCount"
+                            min="0"
+                            placeholder="e.g., 40"
+                            className="w-full px-3 py-2 border border-gray-200 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-white transition-colors"
+                          />
+                        </div>
                       </div>
                       
                       <div>
@@ -5246,27 +5787,36 @@ const SchedulePage = () => {
                     <>
                       <div className="space-y-1">
                           <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Role</span>
-                        <select 
-                          name="role" 
-                          value={editingForm.role || ''} 
-                            onChange={(e) => setEditingForm((f) => ({ ...f, role: e.target.value }))}
-                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
-                        >
-                          <option value="">Select role...</option>
-                          <option value="TA">TA</option>
-                          <option value="Trainer">Trainer</option>
-                        </select>
+                        <SearchableSelect
+                          value={editingForm.role || ''}
+                          onChange={(value) => setEditingForm((f) => ({ ...f, role: value }))}
+                          options={[
+                            { value: 'TA', label: 'TA' },
+                            { value: 'Trainer', label: 'Trainer' }
+                          ]}
+                          placeholder="Select role..."
+                          searchPlaceholder="Search roles..."
+                        />
                       </div>
                       <div className="space-y-1">
                           <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Client</span>
-                        <input 
-                          type="text" 
-                          name="client" 
-                          value={editingForm.client || ''} 
-                            onChange={(e) => setEditingForm((f) => ({ ...f, client: e.target.value }))}
-                          required 
-                          placeholder="Enter client name..."
-                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                        <SearchableSelect
+                          value={editingForm.clientId || (clientsWithPMs.find(c => (c.name || '').trim() === (editingForm.client || '').trim())?.clientId) || ''}
+                          onChange={(value) => {
+                            const client = clientsWithPMs.find(c => c.clientId === value);
+                            setEditingForm((prev) => ({
+                              ...prev,
+                              clientId: value,
+                              client: client?.name ?? '',
+                              assignedPMIds: client?.programManagerIds ?? prev.assignedPMIds ?? []
+                            }));
+                          }}
+                          options={clientsWithPMs.map(c => ({
+                            value: c.clientId,
+                            label: c.name || c.clientId
+                          }))}
+                          placeholder="Select client..."
+                          searchPlaceholder="Search clients..."
                         />
                       </div>
                       <div className="space-y-1">
@@ -5279,6 +5829,40 @@ const SchedulePage = () => {
                           required 
                           placeholder="Enter course name..."
                             className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Tech Stack</span>
+                          <FilterPanelSelect
+                            title="All tech stacks"
+                            options={editTechStackOptions.map(s => ({ value: s, label: s }))}
+                            selected={(editingForm.techStack || '').split(/\s*,\s*/).map(s => s.trim()).filter(Boolean)}
+                            onChange={(arr) => setEditingForm((f) => ({ ...f, techStack: arr.join(', ') }))}
+                            searchPlaceholder="Search tech stacks..."
+                            emptyLabel="No tech stacks"
+                          />
+                      </div>
+                      <div className="space-y-1">
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">No. of Batches</span>
+                        <input
+                          type="text"
+                          name="batchCount"
+                          value={editingForm.batchCount || ''}
+                          onChange={(e) => setEditingForm((f) => ({ ...f, batchCount: e.target.value }))}
+                          placeholder="e.g., 2"
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100 bg-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">No. of Learners</span>
+                        <input
+                          type="number"
+                          name="learnerCount"
+                          value={editingForm.learnerCount || ''}
+                          onChange={(e) => setEditingForm((f) => ({ ...f, learnerCount: e.target.value }))}
+                          min="0"
+                          placeholder="e.g., 40"
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100"
                         />
                       </div>
                       <div className="space-y-1">
@@ -5406,6 +5990,18 @@ const SchedulePage = () => {
                             <span className="text-slate-500">Course</span>
                             <span className="font-medium text-slate-900">{editingForm.course || 'Not specified'}</span>
                           </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-slate-500">Tech Stack</span>
+                            <span className="font-medium text-slate-900">{editingForm.techStack || 'Not specified'}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-slate-500">No. of Batches</span>
+                            <span className="font-medium text-slate-900">{editingForm.batchCount || 'Not specified'}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-slate-500">No. of Learners</span>
+                            <span className="font-medium text-slate-900">{editingForm.learnerCount || 'Not specified'}</span>
+                          </div>
                           <div className="flex items-start justify-between gap-4">
                             <span className="text-slate-500">Description</span>
                             <span className="max-w-[60ch] text-right text-slate-900">
@@ -5506,14 +6102,14 @@ const SchedulePage = () => {
             </div>
 
             <div className="space-y-6">
-              {/* Specialization Filter */}
+              {/* Tech Stack Filter */}
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
                     <div className="w-4 h-4 bg-blue-100 rounded flex items-center justify-center">
                       <span className="text-blue-600 text-xs font-bold">S</span>
                     </div>
-                    Specialization
+                    Tech Stack
                   </label>
                   <div className="flex gap-1">
                     <button

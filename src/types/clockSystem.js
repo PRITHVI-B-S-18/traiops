@@ -148,7 +148,7 @@
  * @property {string} details.name - Trainer name
  * @property {string} details.email - Trainer email
  * @property {string} details.phone - Trainer phone
- * @property {string} details.specialization - Trainer specialization
+ * @property {string} details.specialization - Trainer tech stack
  * @property {Array} details.experience - Experience array
  * @property {string} details.summary - Trainer summary
  * @property {OnboardingStatus} status - Onboarding status

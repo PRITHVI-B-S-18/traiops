@@ -5,6 +5,8 @@ import { saveScheduleData } from '../../utils/firestoreSchedule';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cancelPendingRequestsForTask } from '../../utils/firestoreClockRequests';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { holidays } from '../../data/holidays';
+import { getCurrentDateInUserTimezone } from '../../utils/timezoneUtils';
 
 // Color mapping for statuses with darker, more professional colors
 const STATUS_COLORS = {
@@ -12,6 +14,7 @@ const STATUS_COLORS = {
   nonTraining: 'bg-orange-500 text-white',
   leave: 'bg-red-600 text-white',
   none: 'bg-green-700 text-white',
+  holiday: 'bg-slate-500 text-white',
 };
 
 const STATUS_LABELS = {
@@ -19,10 +22,19 @@ const STATUS_LABELS = {
   nonTraining: 'Non-Training Task',
   leave: 'Leave',
   none: 'Available',
+  holiday: 'Holiday',
 };
 
 function pad2(n) {
   return n.toString().padStart(2, '0');
+}
+
+/** Sunday (getDay() === 0) or a named holiday from data */
+function isHolidayDay(year, month, day) {
+  const date = new Date(year, month, day);
+  if (date.getDay() === 0) return true; // Sunday
+  const dateStr = `${year}-${pad2(month + 1)}-${pad2(day)}`;
+  return !!holidays[dateStr];
 }
 
 function parseLocalDate(dateStr) {
@@ -224,6 +236,7 @@ const TrainerMatrixView = React.memo(({
   // New props for matrix filters (overall matrix view filters)
   matrixFilters,
   setIsMatrixFilterModalOpen,
+  onOpenAvailability = () => {},
   sidebarCollapsed = false,
   toast = () => {},
 }) => {
@@ -271,6 +284,10 @@ const TrainerMatrixView = React.memo(({
   const [searchResults, setSearchResults] = useState([]);
   const [isSelectedTrainersVisible, setIsSelectedTrainersVisible] = useState(true);
 
+  // Category detail modal: 'training' | 'nonTraining' | 'leave' | 'none' (available) | null
+  const [categoryDetailModal, setCategoryDetailModal] = useState(null);
+  const [categoryDetailSearch, setCategoryDetailSearch] = useState('');
+
   const hasActiveFilters = useMemo(() => {
     return (
       matrixFilters.specialization.length > 0 ||
@@ -283,6 +300,55 @@ const TrainerMatrixView = React.memo(({
       (matrixFilters.endDate && matrixFilters.endDate.trim() !== '')
     );
   }, [matrixFilters]);
+
+  // Today's date and lists per category for the category-detail popup (today = user's current date)
+  const todayCategoryDetails = useMemo(() => {
+    const todayStr = getCurrentDateInUserTimezone();
+    const todayDate = parseLocalDate(todayStr);
+    if (!todayDate) return { todayStr, training: [], nonTraining: [], leave: [], available: [] };
+
+    const training = [];
+    const nonTraining = [];
+    const leave = [];
+    const assignedTrainerNames = new Set();
+
+    (flattenedScheduleData || []).forEach((entry) => {
+      if (!entry.trainer) return;
+      const entryStart = parseLocalDate(entry.startDate);
+      const entryEnd = parseLocalDate(entry.endDate || entry.startDate);
+      if (!entryStart || !entryEnd) return;
+      if (todayDate < entryStart || todayDate > entryEnd) return;
+
+      // Skip "Not Alloted" placeholders for training
+      if (entry.type === 'training') {
+        if (entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted') return;
+        assignedTrainerNames.add(entry.trainer);
+        training.push({ trainerName: entry.trainer, ...entry });
+        return;
+      }
+      if (entry.type === 'non-training') {
+        assignedTrainerNames.add(entry.trainer);
+        nonTraining.push({ trainerName: entry.trainer, ...entry });
+        return;
+      }
+      if (entry.type === 'leave') {
+        assignedTrainerNames.add(entry.trainer);
+        leave.push({ trainerName: entry.trainer, ...entry });
+      }
+    });
+
+    const available = (trainers || []).filter((t) => !assignedTrainerNames.has(t.name)).map((t) => ({ trainerName: t.name, trainer: t }));
+
+    const sortByName = (a, b) => (a.trainerName || '').localeCompare(b.trainerName || '', undefined, { sensitivity: 'base' });
+    return {
+      todayStr,
+      todayFormatted: todayStr ? `${todayStr.slice(8, 10)}/${todayStr.slice(5, 7)}/${todayStr.slice(0, 4)}` : '',
+      training: training.sort(sortByName),
+      nonTraining: nonTraining.sort(sortByName),
+      leave: leave.sort(sortByName),
+      available: available.sort(sortByName),
+    };
+  }, [flattenedScheduleData, trainers]);
 
   const trainerMonthlyEntries = useMemo(() => {
     const index = new Map();
@@ -766,6 +832,7 @@ const TrainerMatrixView = React.memo(({
     dailyFilterType,
   ]);
 
+
   // getTrainerCategories function wrapper for backward compatibility
   const getTrainerCategories = useCallback((day) => {
     if (day !== selectedDay) {
@@ -1114,7 +1181,7 @@ const TrainerMatrixView = React.memo(({
         >
           <div className="min-w-0">
             <p className={`font-semibold ${getPrimaryText(section.accent)} truncate`}>{trainer.name}</p>
-            <p className="text-xs text-gray-600 mt-0.5">Specialization: {trainer.specialization || 'Not specified'}</p>
+            <p className="text-xs text-gray-600 mt-0.5">Tech Stack: {trainer.specialization || 'Not specified'}</p>
           </div>
           <Button
             onClick={() => {
@@ -1239,7 +1306,7 @@ const TrainerMatrixView = React.memo(({
             {bulkSelectMode ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
             {bulkSelectMode ? 'Exit Selection' : 'Bulk Select'}
         </Button>
-          
+
           {bulkSelectMode && (
             <>
               <div className="h-6 w-px bg-gray-300" />
@@ -1411,23 +1478,43 @@ const TrainerMatrixView = React.memo(({
         </div>
       </div>
       
-      {/* Legend for matrix view with enhanced colors */}
-      <div className="flex flex-wrap gap-6 mb-4">
-        <div className="flex items-center gap-2">
-          <span className={`inline-block w-6 h-6 rounded-full ${STATUS_COLORS.training} shadow-sm`}></span>
-          <span className="text-sm font-medium">{STATUS_LABELS.training}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className={`inline-block w-6 h-6 rounded-full ${STATUS_COLORS.nonTraining} shadow-sm`}></span>
-          <span className="text-sm font-medium">{STATUS_LABELS.nonTraining}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className={`inline-block w-6 h-6 rounded-full ${STATUS_COLORS.leave} shadow-sm`}></span>
-          <span className="text-sm font-medium">{STATUS_LABELS.leave}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className={`inline-block w-6 h-6 rounded-full ${STATUS_COLORS.none} shadow-sm`}></span>
-          <span className="text-sm font-medium">{STATUS_LABELS.none}</span>
+      {/* Category buttons: click to open today's list for that category */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <button
+          type="button"
+          onClick={() => setCategoryDetailModal('training')}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100 transition-colors"
+        >
+          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.training} shadow-sm`} />
+          {STATUS_LABELS.training}
+        </button>
+        <button
+          type="button"
+          onClick={() => setCategoryDetailModal('nonTraining')}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-orange-200 bg-orange-50 text-orange-800 hover:bg-orange-100 transition-colors"
+        >
+          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.nonTraining} shadow-sm`} />
+          {STATUS_LABELS.nonTraining}
+        </button>
+        <button
+          type="button"
+          onClick={() => setCategoryDetailModal('leave')}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-red-200 bg-red-50 text-red-800 hover:bg-red-100 transition-colors"
+        >
+          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.leave} shadow-sm`} />
+          {STATUS_LABELS.leave}
+        </button>
+        <button
+          type="button"
+          onClick={() => setCategoryDetailModal('none')}
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-green-200 bg-green-50 text-green-800 hover:bg-green-100 transition-colors"
+        >
+          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.none} shadow-sm`} />
+          {STATUS_LABELS.none}
+        </button>
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600">
+          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.holiday} shadow-sm`} />
+          {STATUS_LABELS.holiday}
         </div>
       </div>
 
@@ -1479,6 +1566,138 @@ const TrainerMatrixView = React.memo(({
         )}
       </AnimatePresence>
 
+      {/* Category detail modal: today's list for Training / Non-Training / Leave / Available */}
+      <Dialog open={!!categoryDetailModal} onOpenChange={(open) => { if (!open) { setCategoryDetailModal(null); setCategoryDetailSearch(''); } }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>
+              {categoryDetailModal === 'training' && `${STATUS_LABELS.training} — Today (${todayCategoryDetails.todayFormatted || todayCategoryDetails.todayStr})`}
+              {categoryDetailModal === 'nonTraining' && `${STATUS_LABELS.nonTraining} — Today (${todayCategoryDetails.todayFormatted || todayCategoryDetails.todayStr})`}
+              {categoryDetailModal === 'leave' && `${STATUS_LABELS.leave} — Today (${todayCategoryDetails.todayFormatted || todayCategoryDetails.todayStr})`}
+              {categoryDetailModal === 'none' && `${STATUS_LABELS.none} — Today (${todayCategoryDetails.todayFormatted || todayCategoryDetails.todayStr})`}
+            </DialogTitle>
+            <DialogDescription>
+              {categoryDetailModal === 'training' && 'Trainers with training assigned today.'}
+              {categoryDetailModal === 'nonTraining' && 'Trainers with non-training tasks today.'}
+              {categoryDetailModal === 'leave' && 'Trainers on leave today.'}
+              {categoryDetailModal === 'none' && 'Trainers with no assignment today.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search by name..."
+                value={categoryDetailSearch}
+                onChange={(e) => setCategoryDetailSearch(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto min-h-0 mt-2">
+            {categoryDetailModal === 'training' && (() => {
+              const list = todayCategoryDetails.training.filter((item) => {
+                const term = categoryDetailSearch.trim().toLowerCase();
+                if (!term) return true;
+                const name = (item.trainerName || '').toLowerCase();
+                const client = (item.client || '').toLowerCase();
+                const course = (item.course || '').toLowerCase();
+                const role = (item.role || '').toLowerCase();
+                return name.includes(term) || client.includes(term) || course.includes(term) || role.includes(term);
+              });
+              return list.length === 0 ? (
+                <p className="text-sm text-slate-500 py-4">{todayCategoryDetails.training.length === 0 ? 'No training assigned for today.' : 'No matches for your search.'}</p>
+              ) : (
+                <ul className="space-y-3">
+                  {list.map((item, idx) => (
+                    <li key={idx} className="p-3 rounded-lg border border-slate-200 bg-slate-50/50">
+                      <div className="font-medium text-slate-900">{item.trainerName}</div>
+                      <div className="mt-1 text-sm text-slate-600 space-y-0.5">
+                        {item.client && <div>Client: {item.client}</div>}
+                        {item.course && <div>Course: {item.course}</div>}
+                        {item.role && <div>Role: {item.role}</div>}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
+            {categoryDetailModal === 'nonTraining' && (() => {
+              const list = todayCategoryDetails.nonTraining.filter((item) => {
+                const term = categoryDetailSearch.trim().toLowerCase();
+                if (!term) return true;
+                const name = (item.trainerName || '').toLowerCase();
+                const task = (item.taskDetails || '').toLowerCase();
+                const type = (item.taskType || '').toLowerCase();
+                const desc = (item.description || '').toLowerCase();
+                return name.includes(term) || task.includes(term) || type.includes(term) || desc.includes(term);
+              });
+              return list.length === 0 ? (
+                <p className="text-sm text-slate-500 py-4">{todayCategoryDetails.nonTraining.length === 0 ? 'No non-training tasks for today.' : 'No matches for your search.'}</p>
+              ) : (
+                <ul className="space-y-3">
+                  {list.map((item, idx) => (
+                    <li key={idx} className="p-3 rounded-lg border border-slate-200 bg-orange-50/30">
+                      <div className="font-medium text-slate-900">{item.trainerName}</div>
+                      <div className="mt-1 text-sm text-slate-600 space-y-0.5">
+                        {item.taskDetails && <div>Task: {item.taskDetails}</div>}
+                        {item.taskType && <div>Type: {item.taskType}</div>}
+                        {item.description && <div>Description: {item.description}</div>}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
+            {categoryDetailModal === 'leave' && (() => {
+              const list = todayCategoryDetails.leave.filter((item) => {
+                const term = categoryDetailSearch.trim().toLowerCase();
+                if (!term) return true;
+                const name = (item.trainerName || '').toLowerCase();
+                const desc = (item.description || '').toLowerCase();
+                return name.includes(term) || desc.includes(term);
+              });
+              return list.length === 0 ? (
+                <p className="text-sm text-slate-500 py-4">{todayCategoryDetails.leave.length === 0 ? 'No leave for today.' : 'No matches for your search.'}</p>
+              ) : (
+                <ul className="space-y-3">
+                  {list.map((item, idx) => (
+                    <li key={idx} className="p-3 rounded-lg border border-slate-200 bg-red-50/30">
+                      <div className="font-medium text-slate-900">{item.trainerName}</div>
+                      {item.description && <div className="mt-1 text-sm text-slate-600">Reason: {item.description}</div>}
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
+            {categoryDetailModal === 'none' && (() => {
+              const list = todayCategoryDetails.available.filter((item) => {
+                const term = categoryDetailSearch.trim().toLowerCase();
+                if (!term) return true;
+                const name = (item.trainerName || '').toLowerCase();
+                const spec = ((item.trainer && (item.trainer.specialization || item.trainer.skill)) || '').toLowerCase();
+                return name.includes(term) || spec.includes(term);
+              });
+              return list.length === 0 ? (
+                <p className="text-sm text-slate-500 py-4">{todayCategoryDetails.available.length === 0 ? 'No available trainers for today.' : 'No matches for your search.'}</p>
+              ) : (
+                <ul className="space-y-2">
+                  {list.map((item, idx) => (
+                    <li key={idx} className="p-3 rounded-lg border border-slate-200 bg-green-50/30 flex items-center justify-between">
+                      <span className="font-medium text-slate-900">{item.trainerName}</span>
+                      {item.trainer && (item.trainer.specialization || item.trainer.skill) && (
+                        <span className="text-sm text-slate-500">{item.trainer.specialization || item.trainer.skill}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Enhanced Matrix View with Responsive Grid */}
       <div className={sidebarCollapsed ? "w-full" : "overflow-x-auto"}>
         <div className={sidebarCollapsed ? "w-full" : "min-w-full"}>
@@ -1526,15 +1745,19 @@ const TrainerMatrixView = React.memo(({
                 return cellData && cellData.hasEntries;
               });
 
-              // Get day abbreviation
+              // Get day abbreviation and holiday state (Sundays + named holidays)
               const date = new Date(currentYear, currentMonth, day);
               const dayAbbr = date.toLocaleDateString('en-US', { weekday: 'short' }).substring(0, 2);
+              const holiday = isHolidayDay(currentYear, currentMonth, day);
+              const headerBg = holiday ? 'bg-slate-100 border-b border-slate-200' : '';
+              const headerText = holiday ? 'text-slate-700' : 'text-gray-900';
+              const dayAbbrText = holiday ? 'text-slate-600 font-semibold' : 'text-gray-600 font-medium';
               
               return (
-                <div key={day} className={`p-1 text-center font-medium text-xs ${sidebarCollapsed ? "matrix-cell" : "matrix-cell-sidebar-visible"} relative`}>
+                <div key={day} className={`p-1 text-center font-medium text-xs ${sidebarCollapsed ? "matrix-cell" : "matrix-cell-sidebar-visible"} relative ${headerBg}`}>
                   <div className="flex flex-col items-center gap-0.5">
-                    <span className="text-gray-900 font-semibold">{day}</span>
-                    <span className="text-[10px] text-gray-600 font-medium">{dayAbbr}</span>
+                    <span className={`font-semibold ${headerText}`}>{day}</span>
+                    <span className={`text-[10px] ${dayAbbrText}`}>{dayAbbr}</span>
                     {bulkSelectMode && hasScheduledTasks && (
                       <Button
                         onClick={() => selectDateColumn(day)}
@@ -1600,6 +1823,10 @@ const TrainerMatrixView = React.memo(({
                   const { entries, status, hasEntries, tooltipContent } = cellData;
                   const fullCellKey = `${currentYear}-${currentMonth}-${trainer.id}-${day}`;
                   const isSelected = selectedCells.has(fullCellKey);
+                  // On holiday days, show "available" as holiday color; keep training/non-training/leave as-is so admin can assign
+                  const holiday = isHolidayDay(currentYear, currentMonth, day);
+                  const displayStatus = holiday && status === 'none' ? 'holiday' : status;
+                  const displayTooltip = displayStatus === 'holiday' ? 'Holiday' : tooltipContent;
                       
                   return (
                     <div 
@@ -1614,9 +1841,9 @@ const TrainerMatrixView = React.memo(({
                         }
                       }}
                     >
-                      <Tooltip content={tooltipContent}>
+                      <Tooltip content={displayTooltip}>
                         <span
-                          className={`inline-block rounded-full font-semibold flex items-center justify-center ${STATUS_COLORS[status]} ${sidebarCollapsed ? "w-7 h-7 text-sm" : "w-9 h-9 text-base"} ${isSelected ? 'ring-2 ring-red-500' : ''}`}
+                          className={`inline-block rounded-full font-semibold flex items-center justify-center ${STATUS_COLORS[displayStatus]} ${sidebarCollapsed ? "w-7 h-7 text-sm" : "w-9 h-9 text-base"} ${isSelected ? 'ring-2 ring-red-500' : ''}`}
                         >
                           {day}
                         </span>
@@ -1778,7 +2005,7 @@ const TrainerMatrixView = React.memo(({
                               ['taskDetails', 'Task Details'],
                               ['taskType', 'Task Type'],
                               ['description', 'Description'],
-                              ['specialization', 'Specialization']
+                              ['specialization', 'Tech Stack']
                             ].map(([key, label]) => (
                               <label
                                 key={key}

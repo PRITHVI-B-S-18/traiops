@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { db } from '../../firebase';
 import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { PDFViewer, PDFDownloadLink, Document, Page, Image, View, Text, StyleSheet, Font } from '@react-pdf/renderer';
 import { parse, differenceInMonths } from 'date-fns';
-import { Plus, FileText, AlertTriangle, Loader2, User, ChevronDown } from 'lucide-react';
+import { Plus, FileText, AlertTriangle, Loader2, User, ChevronDown, Download, Filter, X } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 import {
   Dialog,
@@ -23,6 +23,7 @@ import page2 from '../../assets/page2.png';
 import page3 from '../../assets/page3.png';
 import footerImage from '../../assets/footer image.png';
 import logo from '../../assets/logo.png';
+import * as XLSX from 'xlsx';
 
 Font.register({
   family: 'Poppins',
@@ -130,13 +131,14 @@ const truncateText = (text, maxLength) => {
 // PDF styles
 const styles = StyleSheet.create({
   page: { position: 'relative', width: '100%', height: '100%', fontFamily: 'Poppins' },
+  pageWithPadding: { paddingTop: 48, paddingBottom: 48, paddingHorizontal: 0 },
   bgImage: { position: 'absolute', width: '100%', height: '100%', objectFit: 'cover' },
-  header: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fceeee', height: 120, paddingHorizontal: 40, paddingTop: 50 },
+  header: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fceeee', height: 120, paddingHorizontal: 40, paddingTop: 50, marginTop: -48 },
   photoPlaceholder: { width: 80, height: 100, backgroundColor: '#fff', border: '1px solid #ccc', marginRight: 32 },
   headerText: { flex: 1, flexDirection: 'column', justifyContent: 'center' },
   heading: { fontSize: 26, fontWeight: 'extrabold', textAlign: 'left', marginBottom: 2, letterSpacing: 0.5, fontFamily: 'Poppins' },
   subheading: { fontSize: 18, fontWeight: 'medium', textAlign: 'left', marginBottom: 8, color: '#444', fontFamily: 'Poppins' },
-  detailsSection: { marginTop: 40, paddingHorizontal: 40 },
+  detailsSection: { marginTop: 24, paddingHorizontal: 40 },
   detailsRow: { flexDirection: 'row', marginBottom: 8, alignItems: 'flex-start' },
   detailsLabel: { fontWeight: 'bold', fontSize: 13, color: '#222', width: 160, textAlign: 'left', fontFamily: 'Poppins' },
   colonSeparator: { fontSize: 13, color: '#222', width: 10, textAlign: 'center', fontFamily: 'Poppins' },
@@ -193,8 +195,8 @@ const TrainerProfilePDF = ({ profile }) => (
     <Page size="A4" style={styles.page}>
       <Image src={page1} style={styles.bgImage} />
     </Page>
-    {/* Page 2: Profile Details with header and photo placeholder */}
-    <Page size="A4" style={{ ...styles.page, backgroundColor: '#fff' }}>
+    {/* Page 2: Profile Details with header and photo placeholder (padding ensures overflow pages have top/bottom gap) */}
+    <Page size="A4" style={{ ...styles.page, ...styles.pageWithPadding, backgroundColor: '#fff' }}>
       <View style={styles.header}>
         {profile.showPhotoPlaceholder && <View style={styles.photoPlaceholder} />}
         <View style={styles.headerText}>
@@ -249,10 +251,23 @@ const TrainerProfilePDF = ({ profile }) => (
           </View>
         ))}
       </View>
-      <Text style={styles.sectionHeader}>About Trainer</Text>
-      <Text style={styles.about}>
-        {profile.aboutTrainer}
-      </Text>
+      {(() => {
+        const aboutText = profile.aboutTrainer || '';
+        // Match first "real" sentence: period must follow 2+ letters (avoids splitting at B.E., K.V.N, etc.)
+        const firstSentenceMatch = aboutText.match(/^.*?[A-Za-z]{2,}\.\s*/);
+        const matched = firstSentenceMatch ? firstSentenceMatch[0] : '';
+        const firstSentence = matched ? matched.trimEnd() : aboutText.slice(0, 100);
+        const restOfAbout = matched.length > 0 ? aboutText.slice(matched.length).trim() : (firstSentence.length < aboutText.length ? aboutText.slice(firstSentence.length).trim() : '');
+        return (
+          <>
+            <View wrap={false}>
+              <Text style={styles.sectionHeader}>About Trainer</Text>
+              {firstSentence ? <Text style={styles.about}>{firstSentence}{restOfAbout ? ' ' : ''}</Text> : null}
+            </View>
+            {restOfAbout ? <Text style={styles.about}>{restOfAbout}</Text> : null}
+          </>
+        );
+      })()}
       <Image src={footerImage} style={styles.footerImage} />
     </Page>
     {/* Page 3: page3.png as background only */}
@@ -292,6 +307,51 @@ const TrainerProfilesPage = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [selectedExpertise, setSelectedExpertise] = useState([]);
+  const [isExpertiseDropdownOpen, setIsExpertiseDropdownOpen] = useState(false);
+  const [expertiseSearchTerm, setExpertiseSearchTerm] = useState('');
+  const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
+  const exportDropdownRef = useRef(null);
+  const expertiseDropdownRef = useRef(null);
+
+  // Parse expertise string into individual tokens (split by comma, semicolon, newline, " and ", colon)
+  const parseExpertiseTokens = (str) => {
+    if (!str || typeof str !== 'string') return [];
+    return str
+      .split(/[,;\n]|\s+and\s+|:\s*/gi)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  };
+
+  const uniqueExpertise = useMemo(() => {
+    const set = new Set();
+    profiles.forEach((p) => {
+      const tokens = parseExpertiseTokens(p.expertise);
+      tokens.forEach((t) => set.add(t));
+    });
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [profiles]);
+
+  const filteredProfiles = useMemo(() => {
+    if (!selectedExpertise.length) return profiles;
+    return profiles.filter((p) => {
+      const tokens = parseExpertiseTokens(p.expertise);
+      return selectedExpertise.some((ex) => tokens.includes(ex));
+    });
+  }, [profiles, selectedExpertise]);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (exportDropdownRef.current && !exportDropdownRef.current.contains(e.target)) {
+        setExportDropdownOpen(false);
+      }
+      if (expertiseDropdownRef.current && !expertiseDropdownRef.current.contains(e.target)) {
+        setIsExpertiseDropdownOpen(false);
+      }
+    };
+    if (exportDropdownOpen || isExpertiseDropdownOpen) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [exportDropdownOpen, isExpertiseDropdownOpen]);
 
   useEffect(() => {
     fetchProfiles();
@@ -455,6 +515,71 @@ const TrainerProfilesPage = () => {
     setShowPdfPreview(false);
   };
 
+  const flattenProfileForExport = (profile) => {
+    const expList = profile.experienceList || [];
+    const expStr = expList
+      .map((e) => [e.role, e.organization, e.duration].filter(Boolean).join(' | '))
+      .filter(Boolean)
+      .join('; ');
+    return {
+      Name: profile.name || '',
+      Designation: profile.designation || '',
+      'UG Education': profile.ugEducation || '',
+      'UG College': profile.ugCollege || '',
+      'UG Start Year': profile.ugStartYear || '',
+      'UG End Year': profile.ugEndYear || '',
+      'PG Education': profile.pgEducation || '',
+      'PG College': profile.pgCollege || '',
+      'PG Start Year': profile.pgStartYear || '',
+      'PG End Year': profile.pgEndYear || '',
+      Expertise: profile.expertise || '',
+      'Total Experience (years)': profile.experience ?? '',
+      Experience: expStr,
+      'About Trainer': profile.aboutTrainer || '',
+    };
+  };
+
+  const handleExportCSV = () => {
+    setExportDropdownOpen(false);
+    const list = filteredProfiles.map(flattenProfileForExport);
+    if (list.length === 0) {
+      toast({ title: 'No data', description: 'No profiles to export.', variant: 'destructive' });
+      return;
+    }
+    const headers = Object.keys(list[0]);
+    const csvRows = [headers.join(',')];
+    list.forEach((row) => {
+      const values = headers.map((h) => {
+        const v = row[h];
+        const s = v == null ? '' : String(v);
+        return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+      });
+      csvRows.push(values.join(','));
+    });
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `trainer_profiles_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast({ title: 'Exported', description: `${list.length} profile(s) exported as CSV.` });
+  };
+
+  const handleExportExcel = () => {
+    setExportDropdownOpen(false);
+    const list = filteredProfiles.map(flattenProfileForExport);
+    if (list.length === 0) {
+      toast({ title: 'No data', description: 'No profiles to export.', variant: 'destructive' });
+      return;
+    }
+    const ws = XLSX.utils.json_to_sheet(list);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Trainer Profiles');
+    XLSX.writeFile(wb, `trainer_profiles_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    toast({ title: 'Exported', description: `${list.length} profile(s) exported as Excel.` });
+  };
+
   if (loading) {
     return <LoadingSkeleton message="Loading profiles..." />;
   }
@@ -485,10 +610,11 @@ const TrainerProfilesPage = () => {
 
       {profiles.length > 0 && (
         <>
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-4" ref={trainerDropdownRef}>
-          <label htmlFor="select-trainer" className="text-sm font-medium text-slate-700">Select Trainer</label>
-          <div className="relative min-w-[220px]">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 flex-wrap">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-4" ref={trainerDropdownRef}>
+            <label htmlFor="select-trainer" className="text-sm font-medium text-slate-700">Select Trainer</label>
+            <div className="relative min-w-[220px]">
             <button
               id="select-trainer"
               type="button"
@@ -501,7 +627,9 @@ const TrainerProfilesPage = () => {
               <span className="truncate text-slate-900">
                 {selectedTrainerId
                   ? (profiles.find((p) => p.id === selectedTrainerId)?.name ?? '-- Select Trainer --')
-                  : '-- Select Trainer --'}
+                  : filteredProfiles.length === 0 && selectedExpertise.length > 0
+                    ? 'No match'
+                    : '-- Select Trainer --'}
               </span>
               <ChevronDown
                 className={cn('h-4 w-4 text-slate-400 flex-shrink-0 transition-transform duration-200', isTrainerDropdownOpen && 'rotate-180')}
@@ -533,7 +661,7 @@ const TrainerProfilesPage = () => {
                   >
                     -- Select Trainer --
                   </li>
-                  {[...profiles]
+                  {[...filteredProfiles]
                     .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
                     .filter((trainer) =>
                       (trainer.name || '').toLowerCase().includes(trainerSearchTerm.toLowerCase())
@@ -555,6 +683,148 @@ const TrainerProfilesPage = () => {
                       </li>
                     ))}
                 </ul>
+              </div>
+            )}
+          </div>
+          </div>
+
+          {uniqueExpertise.length > 0 && (
+            <div className="flex items-center gap-2" ref={expertiseDropdownRef}>
+              <Filter className="h-4 w-4 text-slate-500" />
+              <label htmlFor="expertise-filter" className="text-sm font-medium text-slate-700 whitespace-nowrap">Technical expertise</label>
+              <div className="relative min-w-[220px]">
+                <button
+                  id="expertise-filter"
+                  type="button"
+                  onClick={() => {
+                    setIsExpertiseDropdownOpen((prev) => !prev);
+                    if (!isExpertiseDropdownOpen) setExpertiseSearchTerm('');
+                  }}
+                  className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm text-left bg-white shadow-sm flex items-center justify-between gap-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors hover:border-slate-300"
+                >
+                  <span className="truncate text-slate-900">
+                    {selectedExpertise.length === 0
+                      ? 'All'
+                      : selectedExpertise.length === 1
+                        ? selectedExpertise[0]
+                        : `${selectedExpertise.length} selected`}
+                  </span>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {selectedExpertise.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedExpertise([]);
+                        }}
+                        className="p-0.5 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-700"
+                        aria-label="Deselect all"
+                        title="Deselect all"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                    <ChevronDown
+                    className={cn('h-4 w-4 text-slate-400 flex-shrink-0 transition-transform duration-200', isExpertiseDropdownOpen && 'rotate-180')}
+                    />
+                  </div>
+                </button>
+                {isExpertiseDropdownOpen && (
+                  <div className="absolute top-full left-0 mt-1 z-50 w-full min-w-[220px] bg-white shadow-lg rounded-lg border border-slate-200 flex flex-col max-h-96">
+                    <div className="p-2 border-b border-slate-100">
+                      <input
+                        type="text"
+                        placeholder="Search expertise..."
+                        value={expertiseSearchTerm}
+                        onChange={(e) => setExpertiseSearchTerm(e.target.value)}
+                        className="w-full px-2.5 py-1.5 border border-slate-200 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        autoFocus
+                      />
+                      {selectedExpertise.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedExpertise([])}
+                          className="mt-2 w-full text-left text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                        >
+                          Deselect all
+                        </button>
+                      )}
+                    </div>
+                    <ul className="py-1 overflow-y-auto max-h-80">
+                      <li
+                        onClick={() => {
+                          setSelectedExpertise([]);
+                        }}
+                        className={cn(
+                          'px-3 py-2 text-sm cursor-pointer transition-colors flex items-center gap-2',
+                          selectedExpertise.length === 0 ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700 hover:bg-slate-50'
+                        )}
+                      >
+                        <span className={cn('inline-flex w-4 h-4 rounded border flex-shrink-0 items-center justify-center', selectedExpertise.length === 0 ? 'bg-blue-500 border-blue-500' : 'border-slate-300')}>
+                          {selectedExpertise.length === 0 && <span className="text-white text-xs">✓</span>}
+                        </span>
+                        All
+                      </li>
+                      {uniqueExpertise
+                        .filter((ex) =>
+                          ex.toLowerCase().includes(expertiseSearchTerm.toLowerCase().trim())
+                        )
+                        .map((ex) => {
+                          const isSelected = selectedExpertise.includes(ex);
+                          return (
+                            <li
+                              key={ex}
+                              onClick={() => {
+                                setSelectedExpertise((prev) =>
+                                  isSelected ? prev.filter((e) => e !== ex) : [...prev, ex]
+                                );
+                              }}
+                              className={cn(
+                                'px-3 py-2 text-sm cursor-pointer transition-colors truncate flex items-center gap-2',
+                                isSelected ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700 hover:bg-slate-50'
+                              )}
+                            >
+                              <span className={cn('inline-flex w-4 h-4 rounded border flex-shrink-0 items-center justify-center', isSelected ? 'bg-blue-500 border-blue-500' : 'border-slate-300')}>
+                                {isSelected && <span className="text-white text-xs">✓</span>}
+                              </span>
+                              {ex}
+                            </li>
+                          );
+                        })}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="relative" ref={exportDropdownRef}>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setExportDropdownOpen((o) => !o)}
+              className="flex items-center gap-2"
+            >
+              <Download className="h-4 w-4" />
+              Export
+            </Button>
+            {exportDropdownOpen && (
+              <div className="absolute left-0 top-full mt-1 z-50 min-w-[160px] bg-white border border-slate-200 rounded-lg shadow-lg py-1">
+                <button
+                  type="button"
+                  onClick={handleExportCSV}
+                  className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  Export as CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportExcel}
+                  className="w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  Export as Excel
+                </button>
               </div>
             )}
           </div>

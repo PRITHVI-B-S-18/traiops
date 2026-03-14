@@ -6,6 +6,8 @@ import SessionWarning from './components/common/SessionWarning';
 import LoginPage from './pages/LoginPage';
 import AdminDashboardLayout from './pages/admin/AdminDashboardLayout';
 import SchedulePage from './pages/admin/SchedulePage';
+import BulkAssignmentPage from './pages/admin/BulkAssignmentPage';
+import AssignmentsDashboardPage from './pages/admin/AssignmentsDashboardPage';
 import TrainerManagementPage from './pages/admin/TrainerManagementPage';
 import TrainerUtilizationPage from './pages/admin/TrainerUtilizationPage';
 import UserManagementPage from './pages/admin/UserManagementPage';
@@ -41,6 +43,8 @@ function AppContent() {
         >
           <Route element={<AdminDashboardLayout />}>
             <Route path="schedule" element={<SchedulePage />} />
+            <Route path="bulk-assignment" element={<BulkAssignmentPage />} />
+            <Route path="assignments-dashboard" element={<AssignmentsDashboardPage />} />
             <Route path="trainers" element={<TrainerManagementPage />} />
             <Route path="profiles" element={<TrainerProfilesPage />} />
             <Route path="utilization" element={<TrainerUtilizationPage />} />

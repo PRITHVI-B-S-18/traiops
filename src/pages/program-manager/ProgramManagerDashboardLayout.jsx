@@ -61,7 +61,7 @@ const ProgramManagerDashboardLayout = () => {
   const sidebarWidthClass = useMemo(() => (sidebarCollapsed ? 'lg:w-20' : 'lg:w-56'), [sidebarCollapsed]);
 
   return (
-    <div className={cn('relative flex min-h-screen w-full', layoutBackground)}>
+    <div className={cn('relative flex h-screen w-full overflow-hidden', layoutBackground)}>
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -72,7 +72,7 @@ const ProgramManagerDashboardLayout = () => {
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-40 flex h-full flex-col border-r border-slate-200 bg-white shadow-xl transition-transform duration-300 lg:sticky lg:top-0 lg:h-screen lg:self-start lg:translate-x-0',
+          'fixed inset-y-0 left-0 z-40 flex h-screen w-64 flex-col border-r border-slate-200 bg-white shadow-xl transition-transform duration-300 lg:translate-x-0',
           sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
           sidebarWidthClass
         )}
@@ -162,8 +162,8 @@ const ProgramManagerDashboardLayout = () => {
         </div>
       </aside>
       
-      <div className="flex flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 shadow-sm lg:hidden">
+      <div className={cn('flex flex-1 flex-col min-h-0 min-w-0', sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-56')}>
+        <header className="flex flex-shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 py-3 shadow-sm lg:hidden">
         <button
             onClick={() => setSidebarOpen(true)}
             className="rounded-lg border border-slate-200 p-2 text-slate-600 transition hover:bg-slate-50"
@@ -182,7 +182,7 @@ const ProgramManagerDashboardLayout = () => {
           </div> */}
         </header>
 
-        <main className="flex-1 overflow-y-auto lg:h-screen lg:overflow-y-auto">
+        <main className="flex-1 min-h-0 min-w-0 overflow-y-auto">
           <div className={cn('mx-auto w-full max-w-6xl', panelPadding, sectionSpacing)}>
             <div className="space-y-4">
               <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4 shadow-sm sm:flex-row sm:items-start sm:justify-between">

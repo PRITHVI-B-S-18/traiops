@@ -8,7 +8,7 @@ function parseLocalDate(dateStr) {
   return new Date(year, month - 1, day);
 }
 
-const DateRangeSelector = ({ onDateRangeChange, initialStartDate, initialEndDate }) => {
+const DateRangeSelector = ({ onDateRangeChange, initialStartDate, initialEndDate, initialExcludedDates = [] }) => {
   const [startDate, setStartDate] = useState(initialStartDate || '');
   const [endDate, setEndDate] = useState(initialEndDate || '');
   const [showCalendar, setShowCalendar] = useState(false);
@@ -59,6 +59,16 @@ const DateRangeSelector = ({ onDateRangeChange, initialStartDate, initialEndDate
       setEndDate(initialEndDate);
     }
   }, [initialStartDate, initialEndDate]);
+
+  const lastInitialExcludedRef = useRef('');
+
+  useEffect(() => {
+    if (!Array.isArray(initialExcludedDates)) return;
+    const incoming = [...initialExcludedDates].sort().join(',');
+    if (incoming === lastInitialExcludedRef.current) return;
+    lastInitialExcludedRef.current = incoming;
+    setExcludedDates(new Set(initialExcludedDates));
+  }, [initialExcludedDates]);
 
   // Toggle date exclusion
   const toggleDateExclusion = (date) => {
