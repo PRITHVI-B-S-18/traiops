@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useOutletContext } from 'react-router-dom';
@@ -237,10 +237,13 @@ const TrainerManagementPage = () => {
   const openEditModal = (trainer) => {
     const idx = getTrainerIndexInFullList(trainer);
     if (idx === -1) return;
+    const t = trainers[idx];
+    const filteredSpec = getFilteredSpecialization(t.specialization);
     setForm({
-      ...trainers[idx],
-      category: trainers[idx].category || 'Internal',
-      experience: (trainers[idx].experience || []).map((e) => ({ ...e }))
+      ...t,
+      category: t.category || 'Internal',
+      experience: (t.experience || []).map((e) => ({ ...e })),
+      specialization: filteredSpec
     });
     setEditIndex(idx);
     setModalOpen(true);
@@ -350,6 +353,18 @@ const TrainerManagementPage = () => {
   // Use only managed tech stacks from Firestore (Manage Tech Stack) everywhere
   const techStackOptions = useMemo(() => [...(techStacks || [])].sort(), [techStacks]);
 
+  /** Returns comma-separated specialization string with only values that exist in the managed tech stack list */
+  const getFilteredSpecialization = useCallback((specializationStr) => {
+    if (!specializationStr || !techStacks || !techStacks.length) return '';
+    const managedSet = new Set(techStacks.map((s) => (s || '').trim().toLowerCase()));
+    const tokens = (specializationStr || '')
+      .split(/\s*,\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const kept = tokens.filter((t) => managedSet.has(t.toLowerCase()));
+    return kept.join(', ');
+  }, [techStacks]);
+
   // Set of trainer names who have at least one training assignment (type=training, real client)
   const trainersWithTrainingAssigned = useMemo(() => {
     const set = new Set();
@@ -370,9 +385,10 @@ const TrainerManagementPage = () => {
       const matchesCategory = categoryFilter === 'all'
         ? true
         : (trainer.category || 'Internal') === categoryFilter;
+      const trainerSpec = getFilteredSpecialization(trainer.specialization);
       const matchesTechStack = techStackFilter === 'all'
         ? true
-        : (trainer.specialization || '').split(/\s*,\s*/).map(s => s.trim()).some(s => s.toLowerCase() === techStackFilter.toLowerCase());
+        : trainerSpec.split(/\s*,\s*/).map(s => s.trim()).some(s => s.toLowerCase() === techStackFilter.toLowerCase());
       const matchesName = !nameSearch.trim()
         ? true
         : (trainer.name || '').toLowerCase().includes(nameSearch.trim().toLowerCase());
@@ -388,7 +404,7 @@ const TrainerManagementPage = () => {
     return [...filtered].sort((a, b) =>
       (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
     );
-  }, [trainers, techStackFilter, categoryFilter, nameSearch, trainingAssignedFilter, trainersWithTrainingAssigned]);
+  }, [trainers, techStackFilter, categoryFilter, nameSearch, trainingAssignedFilter, trainersWithTrainingAssigned, getFilteredSpecialization]);
 
   const filteredTechStackFilters = useMemo(() => {
     const term = techStackFilterSearchTerm.trim().toLowerCase();
@@ -409,20 +425,22 @@ const TrainerManagementPage = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!form.specialization || (typeof form.specialization === 'string' && !form.specialization.trim())) {
+    const filteredSpec = getFilteredSpecialization(form.specialization);
+    const normalizedForm = {
+      ...form,
+      category: form.category || 'Internal',
+      specialization: filteredSpec
+    };
+
+    if (!normalizedForm.specialization || !normalizedForm.specialization.trim()) {
       toast({
-        title: "Tech stack required",
-        description: "Please select at least one tech stack before saving.",
-        variant: "destructive"
+        title: 'Tech stack required',
+        description: 'Please select at least one tech stack from the managed list.',
+        variant: 'destructive'
       });
       return;
     }
 
-    const normalizedForm = {
-      ...form,
-      category: form.category || 'Internal'
-    };
-    
     if (editIndex !== null) {
       // Update existing trainer
       const oldTrainer = trainers[editIndex];
@@ -636,7 +654,7 @@ const TrainerManagementPage = () => {
       "Trainer's Name": trainer.name || '-',
       'Email ID': trainer.email || '-',
       'Phone Number': trainer.phone || '-',
-      'Tech Stack': trainer.specialization || '-',
+      'Tech Stack': getFilteredSpecialization(trainer.specialization) || '-',
       'Professional Summary': trainer.summary || '-',
       'Work Experience': (trainer.experience && trainer.experience.length > 0)
         ? trainer.experience.map(exp => `${exp.company || '-'} - ${exp.role || '-'} (${exp.years || '-'} years)`).join('; ')
@@ -1316,7 +1334,7 @@ const TrainerManagementPage = () => {
               
               <div className="flex items-center space-x-2 text-xs text-gray-600">
                 <Briefcase className="w-3 h-3 text-gray-400" />
-                <span>{trainer.specialization}</span>
+                <span>{getFilteredSpecialization(trainer.specialization) || '—'}</span>
               </div>
 
               <div className="flex items-center space-x-2 text-xs text-gray-600">
