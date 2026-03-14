@@ -33,6 +33,7 @@ const TrainerUtilizationPage = () => {
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
   const [selectedTrainers, setSelectedTrainers] = useState([]);
+  const [selectedClients, setSelectedClients] = useState([]);
   const [sortBy, setSortBy] = useState('utilization'); // utilization, name, trainingDays
   const [sortOrder, setSortOrder] = useState('desc'); // asc, desc
   const [showFilters, setShowFilters] = useState(false);
@@ -155,6 +156,35 @@ const TrainerUtilizationPage = () => {
     return trainingDates.size;
   };
 
+  const trainerClientStats = useMemo(() => {
+    const { start, end } = getDateRange;
+    const stats = new Map();
+
+    Object.entries(scheduleData).forEach(([date, entries]) => {
+      const currentDate = new Date(date);
+      if (currentDate < start || currentDate > end) return;
+      entries.forEach(entry => {
+        if (entry.type !== 'training') return;
+        if (!entry.client || entry.client === 'Not Alloted') return;
+        const trainerName = entry.trainer;
+        if (!trainerName) return;
+        if (!stats.has(trainerName)) stats.set(trainerName, {});
+        const trainerMap = stats.get(trainerName);
+        trainerMap[entry.client] = (trainerMap[entry.client] || 0) + 1;
+      });
+    });
+
+    return stats;
+  }, [scheduleData, getDateRange]);
+
+  const uniqueClients = useMemo(() => {
+    const set = new Set();
+    trainerClientStats.forEach((clientMap) => {
+      Object.keys(clientMap || {}).forEach(client => set.add(client));
+    });
+    return Array.from(set).sort();
+  }, [trainerClientStats]);
+
   // Calculate utilization for all trainers
   const utilizationData = useMemo(() => {
     const { start, end } = getDateRange;
@@ -168,17 +198,26 @@ const TrainerUtilizationPage = () => {
       .map(trainer => {
         const trainingDays = calculateTrainingDays(trainer.name, start, end);
         const utilization = workingDays > 0 ? (trainingDays / workingDays) * 100 : 0;
+        const clientMap = trainerClientStats.get(trainer.name) || {};
+        const clients = Object.entries(clientMap)
+          .sort((a, b) => b[1] - a[1])
+          .map(([client]) => client);
         
         return {
           name: trainer.name,
           id: trainer.id,
           specialization: trainer.specialization,
+          clients,
           status: trainer.status,
           trainingDays,
           workingDays,
           utilization: Math.round(utilization * 100) / 100, // Round to 2 decimal places
           efficiency: utilization >= 80 ? 'High' : utilization >= 60 ? 'Medium' : 'Low'
         };
+      })
+      .filter(trainer => {
+        if (selectedClients.length === 0) return true;
+        return trainer.clients.some(client => selectedClients.includes(client));
       })
       .sort((a, b) => {
         let comparison = 0;
@@ -197,7 +236,14 @@ const TrainerUtilizationPage = () => {
         }
         return sortOrder === 'asc' ? -comparison : comparison;
       });
-  }, [scheduleData, activeTrainers, getDateRange, selectedTrainers, sortBy, sortOrder]);
+  }, [scheduleData, activeTrainers, getDateRange, selectedTrainers, selectedClients, sortBy, sortOrder, trainerClientStats]);
+
+  const isFilterActive = useMemo(() => {
+    const dateActive = timePeriod !== 'currentMonth' || (timePeriod === 'custom' && (customStartDate || customEndDate));
+    const trainerActive = selectedTrainers.length > 0;
+    const clientActive = selectedClients.length > 0;
+    return dateActive || trainerActive || clientActive || sortBy !== 'utilization' || sortOrder !== 'desc';
+  }, [timePeriod, customStartDate, customEndDate, selectedTrainers, selectedClients, sortBy, sortOrder]);
 
   // Calculate summary statistics
   const summaryStats = useMemo(() => {
@@ -236,7 +282,8 @@ const TrainerUtilizationPage = () => {
     const exportData = utilizationData.map(trainer => ({
       'Employee ID': trainer.id,
       'Trainer Name': trainer.name,
-      'Specialization': trainer.specialization,
+      'Tech Stack': trainer.specialization,
+      'Clients': trainer.clients.length ? trainer.clients.join(', ') : '—',
       'Status': trainer.status,
       'Training Days': trainer.trainingDays,
       'Working Days': trainer.workingDays,
@@ -271,7 +318,15 @@ const TrainerUtilizationPage = () => {
       description: 'Track trainer efficiency and resource utilization across different time periods.',
       actions: (
         <>
-          <Button onClick={() => setShowFilters(!showFilters)} variant="outline" size="sm" className="flex items-center gap-2 whitespace-nowrap">
+          <Button
+            onClick={() => setShowFilters(!showFilters)}
+            variant="outline"
+            size="sm"
+            className={cn(
+              "flex items-center gap-2 whitespace-nowrap",
+              showFilters && "border-blue-500 bg-blue-50 text-blue-700"
+            )}
+          >
             <Filter className="h-4 w-4" />
             Filters
           </Button>
@@ -348,6 +403,17 @@ const TrainerUtilizationPage = () => {
         {/* Filters Section */}
         {showFilters && (
           <div className="bg-gray-50 rounded-lg p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-semibold text-gray-800">Filters</h4>
+              <button
+                type="button"
+                onClick={() => setShowFilters(false)}
+                className="text-xs text-gray-600 hover:text-gray-800"
+              >
+                Close
+              </button>
+            </div>
+            <p className="text-xs text-gray-500">Click the Filters button again to close filters.</p>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               {/* Time Period */}
               <div>
@@ -401,6 +467,35 @@ const TrainerUtilizationPage = () => {
                   <option value="trainingDays">Training Days</option>
                 </select>
               </div>
+
+              {/* Client Filter */}
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-2">Filter by Clients</label>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  {uniqueClients.map(client => (
+                    <label key={client} className="flex items-center space-x-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={selectedClients.includes(client)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedClients(prev =>
+                              prev.includes(client) ? prev : [...prev, client]
+                            );
+                          } else {
+                            setSelectedClients(prev => prev.filter(c => c !== client));
+                          }
+                        }}
+                      />
+                      <span className="truncate">{client}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-1 text-xs text-gray-500">No client selected = all clients.</p>
+                {uniqueClients.length === 0 && (
+                  <p className="text-xs text-gray-500">No clients in the selected period.</p>
+                )}
+              </div>
             </div>
 
             {/* Trainer Filter */}
@@ -411,14 +506,14 @@ const TrainerUtilizationPage = () => {
                   <label key={trainer.id} className="flex items-center space-x-2 text-xs">
                     <input 
                       type="checkbox" 
-                      checked={selectedTrainers.length === 0 || selectedTrainers.includes(trainer.name)}
+                      checked={selectedTrainers.includes(trainer.name)}
                       onChange={(e) => {
                         if (e.target.checked) {
                           setSelectedTrainers(prev => 
-                            prev.length === 0 ? [] : prev.filter(t => t !== trainer.name)
+                            prev.includes(trainer.name) ? prev : [...prev, trainer.name]
                           );
                         } else {
-                          setSelectedTrainers(prev => [...prev, trainer.name]);
+                          setSelectedTrainers(prev => prev.filter(t => t !== trainer.name));
                         }
                       }}
                     />
@@ -426,7 +521,28 @@ const TrainerUtilizationPage = () => {
                   </label>
                 ))}
             </div>
+            <p className="mt-1 text-xs text-gray-500">No trainer selected = all trainers.</p>
           </div>
+
+          {isFilterActive && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setTimePeriod('currentMonth');
+                  setCustomStartDate('');
+                  setCustomEndDate('');
+                  setSelectedTrainers([]);
+                  setSelectedClients([]);
+                  setSortBy('utilization');
+                  setSortOrder('desc');
+                }}
+                className="text-xs text-gray-600 hover:text-gray-800"
+              >
+                Clear filters
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -461,6 +577,13 @@ const TrainerUtilizationPage = () => {
                   {trainer.utilization}%
                 </p>
               </div>
+              
+              <div className="text-center">
+                <p className="text-xs font-medium text-gray-500">Clients</p>
+                <p className="text-xs font-semibold text-gray-900">
+                  {trainer.clients.length ? trainer.clients.join(', ') : '—'}
+                </p>
+              </div>
 
               {/* Stats Grid */}
               <div className="grid grid-cols-2 gap-3">
@@ -477,7 +600,7 @@ const TrainerUtilizationPage = () => {
               {/* Additional Info */}
               <div className="space-y-1">
                 <div className="flex justify-between text-xs">
-                  <span className="text-gray-500">Specialization:</span>
+                  <span className="text-gray-500">Tech Stack:</span>
                   <span className="text-gray-900 truncate ml-2">{trainer.specialization}</span>
                 </div>
                 <div className="flex justify-between text-xs items-center">

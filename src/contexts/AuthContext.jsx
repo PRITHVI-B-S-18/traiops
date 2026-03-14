@@ -241,13 +241,25 @@ const AuthProvider = ({ children }) => {
   useEffect(() => {
     let unsubscribeUserDoc = null; // Real-time listener for user document changes
     
+    // Fetch user doc with retries (handles signup race where doc isn't visible yet)
+    const getUserDocWithRetry = async (uid, maxRetries = 3) => {
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const userDoc = await getDoc(doc(db, 'users', uid));
+        if (userDoc.exists()) return userDoc;
+        if (attempt < maxRetries - 1) {
+          await new Promise((r) => setTimeout(r, 300 + attempt * 200));
+        }
+      }
+      return null;
+    };
+
     // Listen to auth state changes
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        // Fetch user role from Firestore if it exists
+        // Fetch user role from Firestore (retry so new signups see their doc)
         try {
-          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          if (userDoc.exists()) {
+          const userDoc = await getUserDocWithRetry(firebaseUser.uid);
+          if (userDoc) {
             const userData = userDoc.data();
             
             // Check if user account is active

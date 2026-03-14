@@ -13,6 +13,8 @@ import {
   Clock,
   Building2,
   Contact,
+  ClipboardList,
+  LineChart,
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
@@ -51,6 +53,8 @@ const AdminDashboardLayout = () => {
 
   const navItems = [
     { path: '/admin/schedule', label: 'Schedule Management', icon: CalendarDays },
+    { path: '/admin/bulk-assignment', label: 'Bulk Assignment', icon: ClipboardList },
+    { path: '/admin/assignments-dashboard', label: 'Assignments Dashboard', icon: LineChart },
     { path: '/admin/trainers', label: 'Trainer Accounts', icon: Users },
     { path: '/admin/profiles', label: 'Trainer Profiles', icon: Contact },
     { path: '/admin/utilization', label: 'Trainer Utilization', icon: BarChart3 },

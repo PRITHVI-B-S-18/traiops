@@ -304,10 +304,10 @@ const OnboardingForm = ({ user, onComplete, skipOnboarding = false }) => {
             </div>
           </div>
 
-          {/* Specialization */}
+          {/* Tech Stack */}
           <div>
             <label className="block text-sm font-medium text-[#2C2C2C] mb-2">
-              Specialization <span className="text-red-500">*</span>
+              Tech Stack <span className="text-red-500">*</span>
             </label>
             <div className="relative">
               <Award className="absolute left-3 top-1/2 transform -translate-y-1/2 text-[#888888] w-5 h-5" />

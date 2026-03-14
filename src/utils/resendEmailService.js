@@ -1,7 +1,8 @@
 /**
- * Email Service using Custom API Endpoint
- * API: POST http://localhost:3000/send
- * Format: { toAddress, Subject, Body }
+ * Email Service using Trainer Scheduler Email Queue API
+ * API: https://nodemailer-mail-api.onrender.com
+ * POST /send — queue email(s). Body: { toAddress, Subject, Body }
+ * Configured via VITE_EMAIL_API_URL (e.g. https://nodemailer-mail-api.onrender.com/send)
  */
 
 import { buildAppUrl } from './appUrls';

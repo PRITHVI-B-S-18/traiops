@@ -1,16 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useOutletContext } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { saveTrainerData, loadTrainerData } from '../../utils/firestoreTrainers';
+import { loadScheduleData } from '../../utils/firestoreSchedule';
 import { syncAllTrainers, getTrainerSyncStatus, syncTrainerStatusToUser, prepareTrainerInvitation } from '../../utils/trainerSync';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '@/components/ui/button';
-import { Upload, Download, Plus, Edit, Trash2, X, User, Mail, Phone, Briefcase, FileText, Users, CheckCircle, XCircle, RefreshCw, UserPlus, ShieldCheck, Award, Loader2 } from 'lucide-react';
+import { Upload, Download, Plus, Edit, Trash2, X, User, Mail, Phone, Briefcase, FileText, Users, CheckCircle, XCircle, RefreshCw, UserPlus, ShieldCheck, Award, Loader2, ChevronDown, AlertCircle, Search } from 'lucide-react';
 import { useToast } from "@/components/ui/use-toast";
 import DeleteTrainerModal from '@/components/admin/DeleteTrainerModal';
-import { doc, deleteDoc, getDoc, updateDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import FilterPanelSelect from '@/components/ui/FilterPanelSelect';
+import { doc, deleteDoc, getDoc, updateDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { cn } from '@/lib/utils';
 import { cardStyles, cardPadding } from '@/styles/designSystem';
@@ -56,6 +58,7 @@ const initialTrainers = [
     email: 'aravindhan.s@iamneo.ai',
     phone: '6381466026',
     specialization: 'DSA',
+    category: 'Internal',
     experience: [
       { company: 'Company A', years: 2, role: 'Trainer' },
     ],
@@ -68,6 +71,7 @@ const initialTrainers = [
     email: 'bindhiya.j@iamneo.ai',
     phone: '9876543210',
     specialization: 'DSA',
+    category: 'Internal',
     experience: [
       { company: 'Company B', years: 1, role: 'TA' },
     ],
@@ -82,6 +86,7 @@ const emptyTrainer = {
   email: '',
   phone: '',
   specialization: '',
+  category: 'Internal',
   experience: [{ company: '', years: '', role: '' }],
   summary: '',
   status: 'Active',
@@ -105,7 +110,22 @@ const TrainerManagementPage = () => {
   const [syncStatus, setSyncStatus] = useState([]);
   const [selectedTrainers, setSelectedTrainers] = useState([]);
   const [inviteLoadingId, setInviteLoadingId] = useState(null);
-  
+  const [techStacks, setTechStacks] = useState([]);
+  const [techStackModalOpen, setTechStackModalOpen] = useState(false);
+  const [techStackInput, setTechStackInput] = useState('');
+  const [techStackError, setTechStackError] = useState('');
+  const [editingTechStack, setEditingTechStack] = useState(null);
+  const [editingTechStackInput, setEditingTechStackInput] = useState('');
+  const [editingTechStackError, setEditingTechStackError] = useState('');
+  const [techStacksLoaded, setTechStacksLoaded] = useState(false);
+  const [techStackFilterOpen, setTechStackFilterOpen] = useState(false);
+  const [techStackFilterSearchTerm, setTechStackFilterSearchTerm] = useState('');
+  const techStackFilterRef = useRef(null);
+  const [techStackFilter, setTechStackFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [nameSearch, setNameSearch] = useState('');
+  const [trainingAssignedFilter, setTrainingAssignedFilter] = useState('all'); // 'all' | 'assigned' | 'not_assigned'
+
   // Onboarding approvals state
   const [activeTab, setActiveTab] = useState('trainers'); // 'trainers' or 'onboarding'
   const [onboardingRequests, setOnboardingRequests] = useState([]);
@@ -115,6 +135,9 @@ const TrainerManagementPage = () => {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [trainerToDelete, setTrainerToDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Schedule data to determine "no training assigned" per trainer
+  const [scheduleData, setScheduleData] = useState({});
 
   // Ref to track if we're loading data (to prevent save loop)
   const isLoadingRef = useRef(false);
@@ -144,6 +167,45 @@ const TrainerManagementPage = () => {
     fetchTrainers();
   }, [toast]);
 
+  // Load schedule data to know which trainers have at least one training assigned
+  useEffect(() => {
+    loadScheduleData()
+      .then((data) => setScheduleData(data || {}))
+      .catch((err) => console.error('Error loading schedule for trainer indicators:', err));
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (
+        techStackFilterRef.current &&
+        !techStackFilterRef.current.contains(event.target)
+      ) {
+        setTechStackFilterOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    const fetchTechStacks = async () => {
+      try {
+        const docRef = doc(db, 'settings', 'techStacks');
+        const snapshot = await getDoc(docRef);
+        const storedStacks = snapshot.exists() ? snapshot.data()?.values : [];
+        const normalized = Array.isArray(storedStacks)
+          ? storedStacks.filter(Boolean)
+          : [];
+        setTechStacks(normalized);
+      } catch (error) {
+        console.error('Error loading tech stacks:', error);
+      } finally {
+        setTechStacksLoaded(true);
+      }
+    };
+    fetchTechStacks();
+  }, []);
+
   // Save trainers to Firestore whenever trainers state changes (but not during initial load)
   useEffect(() => {
     // Don't save if we're loading or on initial mount
@@ -167,7 +229,11 @@ const TrainerManagementPage = () => {
   };
 
   const openEditModal = (idx) => {
-    setForm({ ...trainers[idx], experience: trainers[idx].experience.map(e => ({ ...e })) });
+    setForm({
+      ...trainers[idx],
+      category: trainers[idx].category || 'Internal',
+      experience: trainers[idx].experience.map(e => ({ ...e }))
+    });
     setEditIndex(idx);
     setModalOpen(true);
   };
@@ -190,6 +256,140 @@ const TrainerManagementPage = () => {
     }));
   };
 
+  const normalizeTechStack = (value) =>
+    value.replace(/\s+/g, ' ').trim();
+
+  const handleAddTechStack = async () => {
+    const normalized = normalizeTechStack(techStackInput);
+    if (!normalized) {
+      setTechStackError('Enter a tech stack name.');
+      return;
+    }
+    const exists = techStacks.some(
+      stack => stack.toLowerCase() === normalized.toLowerCase()
+    );
+    if (exists) {
+      setTechStackError('This tech stack already exists.');
+      return;
+    }
+
+    const updated = [...techStacks, normalized];
+    setTechStacks(updated);
+    setTechStackInput('');
+    setTechStackError('');
+    try {
+      await setDoc(doc(db, 'settings', 'techStacks'), { values: updated }, { merge: true });
+    } catch (error) {
+      console.error('Error saving tech stacks:', error);
+    }
+  };
+
+  const handleRemoveTechStack = async (stackToRemove) => {
+    const key = (stackToRemove || '').trim().toLowerCase();
+    const updated = techStacks.filter(stack => (stack || '').trim().toLowerCase() !== key);
+    setTechStacks(updated);
+    try {
+      await setDoc(doc(db, 'settings', 'techStacks'), { values: updated }, { merge: true });
+    } catch (error) {
+      console.error('Error saving tech stacks:', error);
+    }
+  };
+
+  const handleStartEditTechStack = (stack) => {
+    setEditingTechStack(stack);
+    setEditingTechStackInput(stack);
+    setEditingTechStackError('');
+  };
+
+  const handleSaveEditedTechStack = async () => {
+    if (!editingTechStack) return;
+    const normalized = normalizeTechStack(editingTechStackInput);
+    if (!normalized) {
+      setEditingTechStackError('Enter a tech stack name.');
+      return;
+    }
+
+    const exists = techStacks.some(
+      stack =>
+        stack.toLowerCase() === normalized.toLowerCase() &&
+        stack.toLowerCase() !== editingTechStack.toLowerCase()
+    );
+    if (exists) {
+      setEditingTechStackError('This tech stack already exists.');
+      return;
+    }
+
+    const targetIndex = techStacks.findIndex(
+      stack => stack.toLowerCase() === editingTechStack.toLowerCase()
+    );
+    if (targetIndex === -1) {
+      setEditingTechStackError('Tech stack not found.');
+      return;
+    }
+    const updated = [...techStacks];
+    updated[targetIndex] = normalized;
+    setTechStacks(updated);
+    setEditingTechStack(null);
+    setEditingTechStackInput('');
+    setEditingTechStackError('');
+    try {
+      await setDoc(doc(db, 'settings', 'techStacks'), { values: updated }, { merge: true });
+    } catch (error) {
+      console.error('Error saving tech stacks:', error);
+    }
+  };
+
+  // Use only managed tech stacks from Firestore (Manage Tech Stack) everywhere
+  const techStackOptions = useMemo(() => [...(techStacks || [])].sort(), [techStacks]);
+
+  // Set of trainer names who have at least one training assignment (type=training, real client)
+  const trainersWithTrainingAssigned = useMemo(() => {
+    const set = new Set();
+    if (!scheduleData || typeof scheduleData !== 'object') return set;
+    Object.values(scheduleData).forEach((dayEntries) => {
+      if (!Array.isArray(dayEntries)) return;
+      dayEntries.forEach((entry) => {
+        if (entry?.type === 'training' && entry?.client && entry.client !== 'Not Alloted') {
+          if (entry.trainer) set.add(entry.trainer);
+        }
+      });
+    });
+    return set;
+  }, [scheduleData]);
+
+  const filteredTrainers = useMemo(() => {
+    let filtered = trainers.filter(trainer => {
+      const matchesCategory = categoryFilter === 'all'
+        ? true
+        : (trainer.category || 'Internal') === categoryFilter;
+      const matchesTechStack = techStackFilter === 'all'
+        ? true
+        : (trainer.specialization || '').split(/\s*,\s*/).map(s => s.trim()).some(s => s.toLowerCase() === techStackFilter.toLowerCase());
+      const matchesName = !nameSearch.trim()
+        ? true
+        : (trainer.name || '').toLowerCase().includes(nameSearch.trim().toLowerCase());
+      const hasTraining = trainersWithTrainingAssigned.has(trainer.name);
+      const matchesTraining =
+        trainingAssignedFilter === 'all'
+          ? true
+          : trainingAssignedFilter === 'assigned'
+            ? hasTraining
+            : !hasTraining;
+      return matchesCategory && matchesTechStack && matchesName && matchesTraining;
+    });
+    return [...filtered].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    );
+  }, [trainers, techStackFilter, categoryFilter, nameSearch, trainingAssignedFilter, trainersWithTrainingAssigned]);
+
+  const filteredTechStackFilters = useMemo(() => {
+    const term = techStackFilterSearchTerm.trim().toLowerCase();
+    if (!term) return techStackOptions;
+    return techStackOptions.filter(stack =>
+      stack.toLowerCase().includes(term)
+    );
+  }, [techStackOptions, techStackFilterSearchTerm]);
+
   const addExperience = () => {
     setForm(f => ({ ...f, experience: [...f.experience, { company: '', years: '', role: '' }] }));
   };
@@ -200,20 +400,34 @@ const TrainerManagementPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!form.specialization || (typeof form.specialization === 'string' && !form.specialization.trim())) {
+      toast({
+        title: "Tech stack required",
+        description: "Please select at least one tech stack before saving.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    const normalizedForm = {
+      ...form,
+      category: form.category || 'Internal'
+    };
     
     if (editIndex !== null) {
       // Update existing trainer
       const oldTrainer = trainers[editIndex];
-      const newStatus = form.status;
+      const newStatus = normalizedForm.status;
       const oldStatus = oldTrainer.status;
       
-      setTrainers(ts => ts.map((t, i) => i === editIndex ? { ...form } : t));
+      setTrainers(ts => ts.map((t, i) => i === editIndex ? { ...normalizedForm } : t));
       closeModal();
       
       // Sync status to user if status changed and user exists
-      if (oldStatus !== newStatus && form.email) {
+      if (oldStatus !== newStatus && normalizedForm.email) {
         try {
-          const syncResult = await syncTrainerStatusToUser(form.email, newStatus);
+          const syncResult = await syncTrainerStatusToUser(normalizedForm.email, newStatus);
           if (syncResult.success && !syncResult.skipped) {
             toast({
               title: "Status Synced",
@@ -243,7 +457,7 @@ const TrainerManagementPage = () => {
     } else {
       // Add new trainer - only store in trainers collection
       // To create auth account, use "Sync Accounts" to send invitation email
-      const newTrainer = { ...form };
+      const newTrainer = { ...normalizedForm };
       setTrainers(ts => [...ts, newTrainer]);
       closeModal();
       
@@ -405,11 +619,12 @@ const TrainerManagementPage = () => {
   const handleExportAll = () => {
     const data = trainers.map(trainer => ({
       'Active Status': trainer.status || 'Active',
+      'Category': trainer.category || 'Internal',
       'Employee ID': trainer.id || '-',
       "Trainer's Name": trainer.name || '-',
       'Email ID': trainer.email || '-',
       'Phone Number': trainer.phone || '-',
-      'Specialization': trainer.specialization || '-',
+      'Tech Stack': trainer.specialization || '-',
       'Professional Summary': trainer.summary || '-',
       'Work Experience': (trainer.experience && trainer.experience.length > 0)
         ? trainer.experience.map(exp => `${exp.company || '-'} - ${exp.role || '-'} (${exp.years || '-'} years)`).join('; ')
@@ -429,31 +644,34 @@ const TrainerManagementPage = () => {
     const sampleData = [
       {
         'Active Status': 'Active',
+        'Category': 'Internal',
         'Employee ID': 'neo10172',
         "Trainer's Name": 'Aravindhan S',
         'Email ID': 'aravindhan.s@iamneo.ai',
         'Phone Number': '6381466026',
-        'Specialization': 'DSA',
+        'Tech Stack': 'DSA',
         'Professional Summary': 'Experienced C++ and DSA trainer.',
         'Work Experience': 'Company A - Trainer (2 years)'
       },
       {
         'Active Status': 'Active',
+        'Category': 'Internal',
         'Employee ID': 'neo/c/10301',
         "Trainer's Name": 'Bindhiya J',
         'Email ID': 'bindhiya.j@iamneo.ai',
         'Phone Number': '9876543210',
-        'Specialization': 'DSA',
+        'Tech Stack': 'DSA',
         'Professional Summary': 'Teaching assistant for C++ and DSA.',
         'Work Experience': 'Company B - TA (1 years)'
       },
       {
         'Active Status': 'Inactive',
+        'Category': 'Freelancer',
         'Employee ID': 'neo10370',
         "Trainer's Name": 'Denis Anto Bosco J',
         'Email ID': 'denisanto.bosco@iamneo.ai',
         'Phone Number': '6381035379',
-        'Specialization': 'DSA',
+        'Tech Stack': 'DSA',
         'Professional Summary': 'Experienced trainer with strong DSA background.',
         'Work Experience': 'Company C - Senior Trainer (3 years)'
       }
@@ -513,11 +731,12 @@ const TrainerManagementPage = () => {
       }
       const requiredHeaders = [
         'Active Status',
+        'Category',
         'Employee ID',
         "Trainer's Name",
         'Email ID',
         'Phone Number',
-        'Specialization',
+        'Tech Stack',
         'Professional Summary',
         'Work Experience'
       ];
@@ -545,11 +764,12 @@ const TrainerManagementPage = () => {
       }
       const importedTrainers = objectData.map(row => ({
         status: row['Active Status'] || 'Active',
+        category: row['Category'] || 'Internal',
         id: row['Employee ID'] ? String(row['Employee ID']).trim() : '',
         name: row["Trainer's Name"] || '-',
         email: row['Email ID'] || '-',
         phone: row['Phone Number'] || '-',
-        specialization: row['Specialization'] || '-',
+        specialization: row['Tech Stack'] || '-',
         summary: row['Professional Summary'] || '-',
         experience: row['Work Experience']
           ? row['Work Experience'].split(';').map(exp => {
@@ -757,10 +977,14 @@ const TrainerManagementPage = () => {
       description: 'Manage trainer profiles, sync accounts, and handle onboarding approvals.',
       actions: (
     <>
-          <Button onClick={handleOpenSyncModal} variant="outline" size="sm" className="flex items-center gap-2 whitespace-nowrap">
+          <Button onClick={() => setTechStackModalOpen(true)} variant="outline" size="sm" className="flex items-center gap-2 whitespace-nowrap">
+            <Award className="w-4 h-4" />
+            Manage Tech Stacks
+          </Button>
+          {/* <Button onClick={handleOpenSyncModal} variant="outline" size="sm" className="flex items-center gap-2 whitespace-nowrap">
             <UserPlus className="w-4 h-4" />
         Sync Accounts
-      </Button>
+      </Button> */}
           <Button onClick={handleSampleDownload} variant="outline" size="sm" className="flex items-center gap-2 whitespace-nowrap">
             <Download className="w-4 h-4" />
         Sample
@@ -850,10 +1074,141 @@ const TrainerManagementPage = () => {
 
       {trainers.length > 0 && (
         <>
-      {/* Trainer Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {trainers.map((trainer, idx) => (
-          <div key={trainer.id} className="bg-white rounded-lg shadow-sm border border-border/50 overflow-hidden hover:shadow-md transition-shadow">
+      {/* Filters */}
+      <div className={cn(cardStyles.surface, 'p-4 flex flex-wrap items-end gap-4')}>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Search by name</label>
+          <div className="relative w-56">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search trainer name..."
+              value={nameSearch}
+              onChange={(e) => setNameSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Training assigned</label>
+          <select
+            value={trainingAssignedFilter}
+            onChange={(e) => setTrainingAssignedFilter(e.target.value)}
+            className="w-44 px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All</option>
+            <option value="assigned">Has training assigned</option>
+            <option value="not_assigned">No training assigned</option>
+          </select>
+        </div>
+        <div ref={techStackFilterRef}>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Tech Stack</label>
+          <div className="relative w-56">
+            <button
+              type="button"
+              onClick={() => {
+                setTechStackFilterOpen((prev) => !prev);
+                if (!techStackFilterOpen) setTechStackFilterSearchTerm('');
+              }}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white text-left flex items-center justify-between gap-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <span className="truncate text-slate-900">
+                {techStackFilter === 'all' ? 'All' : techStackFilter}
+              </span>
+              <ChevronDown
+                className={cn('h-4 w-4 text-slate-400 flex-shrink-0 transition-transform duration-200', techStackFilterOpen && 'rotate-180')}
+              />
+            </button>
+            {techStackFilterOpen && (
+              <div className="absolute top-full left-0 mt-1 z-50 w-full bg-white shadow-lg rounded-lg border border-slate-200 flex flex-col max-h-72">
+                <div className="p-2 border-b border-slate-100">
+                  <input
+                    type="text"
+                    placeholder="Search tech stacks..."
+                    value={techStackFilterSearchTerm}
+                    onChange={(e) => setTechStackFilterSearchTerm(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    autoFocus
+                  />
+                </div>
+                <ul className="py-1 overflow-y-auto max-h-60">
+                  <li
+                    onClick={() => {
+                      setTechStackFilter('all');
+                      setTechStackFilterOpen(false);
+                    }}
+                    className={cn(
+                      'px-3 py-2 text-sm cursor-pointer transition-colors',
+                      techStackFilter === 'all' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700 hover:bg-slate-50'
+                    )}
+                  >
+                    All
+                  </li>
+                  {filteredTechStackFilters.length > 0 ? (
+                    filteredTechStackFilters.map((stack) => (
+                      <li
+                        key={stack}
+                        onClick={() => {
+                          setTechStackFilter(stack);
+                          setTechStackFilterOpen(false);
+                        }}
+                        className={cn(
+                          'px-3 py-2 text-sm cursor-pointer transition-colors',
+                          techStackFilter === stack ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700 hover:bg-slate-50'
+                        )}
+                      >
+                        {stack}
+                      </li>
+                    ))
+                  ) : (
+                    <li className="px-3 py-2 text-sm text-slate-500">No matches found</li>
+                  )}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Category</label>
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            className="w-44 px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All</option>
+            <option value="Internal">Internal</option>
+            <option value="Freelancer">Freelancer</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setTechStackFilter('all');
+              setCategoryFilter('all');
+              setTechStackFilterSearchTerm('');
+              setNameSearch('');
+              setTrainingAssignedFilter('all');
+            }}
+          >
+            Clear Filters
+          </Button>
+          <span className="text-xs text-slate-500">
+            Showing {filteredTrainers.length} of {trainers.length}
+          </span>
+        </div>
+      </div>
+
+      {filteredTrainers.length === 0 ? (
+        <div className={cn(cardStyles.surface, 'p-10 text-center text-sm text-slate-500')}>
+          No trainers match the selected filters.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {filteredTrainers.map((trainer, idx) => (
+            <div key={trainer.id} className="bg-white rounded-lg shadow-sm border border-border/50 overflow-hidden hover:shadow-md transition-shadow">
             {/* Card Header */}
             <div className="p-3 border-b border-gray-100">
               <div className="flex items-start justify-between">
@@ -924,6 +1279,12 @@ const TrainerManagementPage = () => {
                   {getStatusIcon(trainer.status)}
                   <span>{trainer.status}</span>
                   </div>
+                  {!trainersWithTrainingAssigned.has(trainer.name) && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border border-amber-200 bg-amber-50 text-amber-700">
+                      <AlertCircle className="w-3 h-3" />
+                      No training assigned till now
+                    </span>
+                  )}
                 </div>
               </div>
               
@@ -944,6 +1305,11 @@ const TrainerManagementPage = () => {
               <div className="flex items-center space-x-2 text-xs text-gray-600">
                 <Briefcase className="w-3 h-3 text-gray-400" />
                 <span>{trainer.specialization}</span>
+              </div>
+
+              <div className="flex items-center space-x-2 text-xs text-gray-600">
+                <Users className="w-3 h-3 text-gray-400" />
+                <span>{trainer.category || 'Internal'}</span>
               </div>
               
               {trainer.summary && (
@@ -969,8 +1335,9 @@ const TrainerManagementPage = () => {
               )}
             </div>
           </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
         </>
       )}
 
@@ -1092,19 +1459,16 @@ const TrainerManagementPage = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-[#2C2C2C] mb-2">
-                      Specialization <span className="text-red-500">*</span>
+                      Tech Stack <span className="text-red-500">*</span>
                     </label>
-                    <div className="relative">
-                      <Award className="absolute left-3 top-1/2 transform -translate-y-1/2 text-[#888888] w-5 h-5" />
-                    <input 
-                      name="specialization" 
-                      value={form.specialization} 
-                      onChange={handleFormChange} 
-                      required 
-                        className="w-full pl-10 pr-4 py-3 border border-[#D0D0D0] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#5A5A5A] focus:border-transparent transition-all" 
-                      placeholder="e.g., DSA, C++, Java"
+                    <FilterPanelSelect
+                      title="All tech stacks"
+                      options={techStackOptions.map(s => ({ value: s, label: s }))}
+                      selected={(form.specialization || '').split(/\s*,\s*/).map(s => s.trim()).filter(Boolean)}
+                      onChange={(arr) => setForm(f => ({ ...f, specialization: arr.join(', ') }))}
+                      searchPlaceholder="Search tech stacks..."
+                      emptyLabel="No tech stacks"
                     />
-              </div>
                   </div>
                   
               <div>
@@ -1119,6 +1483,23 @@ const TrainerManagementPage = () => {
                     >
                       <option value="Active">Active</option>
                       <option value="Inactive">Inactive</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-[#2C2C2C] mb-2">
+                      Category <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      name="category"
+                      value={form.category || 'Internal'}
+                      onChange={handleFormChange}
+                      className="w-full px-4 py-3 border border-[#D0D0D0] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#5A5A5A] focus:border-transparent transition-all bg-white"
+                    >
+                      <option value="Internal">Internal</option>
+                      <option value="Freelancer">Freelancer</option>
                     </select>
                   </div>
                 </div>
@@ -1510,6 +1891,149 @@ const TrainerManagementPage = () => {
             </div>
           </motion.div>
         </motion.div>
+        </AnimatePresence>
+      , document.body)}
+
+      {/* Tech Stack Management Modal */}
+      {techStackModalOpen && createPortal(
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            className="fixed top-0 left-0 right-0 bottom-0 w-screen h-screen bg-black/80 flex items-center justify-center z-50 p-4"
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+            variants={modalVariants}
+          >
+            <motion.div
+              className="bg-white rounded-lg shadow-xl w-full max-w-xl max-h-[85vh] overflow-hidden"
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              variants={modalContentVariants}
+              transition={modalContentTransition}
+            >
+              <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                    <Award className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900">Manage Tech Stacks</h3>
+                    <p className="text-sm text-gray-500">Add or remove tech stack options</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setTechStackModalOpen(false);
+                    setTechStackInput('');
+                    setTechStackError('');
+                    setEditingTechStack(null);
+                    setEditingTechStackInput('');
+                    setEditingTechStackError('');
+                  }}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Add Tech Stack</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={techStackInput}
+                      onChange={(e) => {
+                        setTechStackInput(e.target.value);
+                        setTechStackError('');
+                      }}
+                      placeholder="e.g., Java, React, AWS"
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                    <Button type="button" onClick={handleAddTechStack}>
+                      Add
+                    </Button>
+                  </div>
+                  {techStackError && (
+                    <p className="mt-2 text-xs text-red-600">{techStackError}</p>
+                  )}
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-sm font-medium text-gray-900">Current Tech Stacks</h4>
+                    <span className="text-xs text-gray-500">{techStacks.length} total</span>
+                  </div>
+                  <div className="border border-gray-200 rounded-lg max-h-64 overflow-y-auto">
+                    {techStacks.length === 0 ? (
+                      <div className="p-4 text-sm text-gray-500 text-center">No tech stacks added yet.</div>
+                    ) : (
+                      <ul className="divide-y divide-gray-200">
+                        {techStacks.slice().sort().map(stack => (
+                          <li key={stack} className="flex items-center justify-between px-4 py-2">
+                            {editingTechStack === stack ? (
+                              <div className="flex-1 space-y-2">
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    value={editingTechStackInput}
+                                    onChange={(e) => {
+                                      setEditingTechStackInput(e.target.value);
+                                      setEditingTechStackError('');
+                                    }}
+                                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                                  />
+                                  <Button type="button" size="sm" onClick={handleSaveEditedTechStack}>
+                                    Save
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => {
+                                      setEditingTechStack(null);
+                                      setEditingTechStackInput('');
+                                      setEditingTechStackError('');
+                                    }}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </div>
+                                {editingTechStackError && (
+                                  <p className="text-xs text-red-600">{editingTechStackError}</p>
+                                )}
+                              </div>
+                            ) : (
+                              <>
+                                <span className="text-sm text-gray-700">{stack}</span>
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartEditTechStack(stack)}
+                                    className="text-xs text-blue-600 hover:text-blue-700"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveTechStack(stack)}
+                                    className="text-xs text-red-600 hover:text-red-700"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
         </AnimatePresence>
       , document.body)}
 
