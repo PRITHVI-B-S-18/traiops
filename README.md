@@ -370,3 +370,4 @@ Views personal schedules, clocks in/out for training sessions, and manages their
 - NodeMailer API endpoint configured via `VITE_EMAIL_API_URL` environment variable
 - Mapbox access token for location services (optional, if using location features)
 
+# traiops
