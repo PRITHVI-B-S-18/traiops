@@ -228,11 +228,19 @@ const TrainerManagementPage = () => {
     setModalOpen(true);
   };
 
-  const openEditModal = (idx) => {
+  const getTrainerIndexInFullList = (trainer) => {
+    const byId = trainers.findIndex((t) => t.id && trainer.id && t.id === trainer.id);
+    if (byId !== -1) return byId;
+    return trainers.findIndex((t) => t.email === trainer.email && t.name === trainer.name);
+  };
+
+  const openEditModal = (trainer) => {
+    const idx = getTrainerIndexInFullList(trainer);
+    if (idx === -1) return;
     setForm({
       ...trainers[idx],
       category: trainers[idx].category || 'Internal',
-      experience: trainers[idx].experience.map(e => ({ ...e }))
+      experience: (trainers[idx].experience || []).map((e) => ({ ...e }))
     });
     setEditIndex(idx);
     setModalOpen(true);
@@ -468,7 +476,9 @@ const TrainerManagementPage = () => {
     }
   };
 
-  const handleDeleteClick = (idx) => {
+  const handleDeleteClick = (trainer) => {
+    const idx = getTrainerIndexInFullList(trainer);
+    if (idx === -1) return;
     setTrainerToDelete({ ...trainers[idx], index: idx });
     setDeleteModalOpen(true);
   };
@@ -589,21 +599,23 @@ const TrainerManagementPage = () => {
     setTrainerToDelete(null);
   };
 
-  const handleVerifyTrainer = async (idx) => {
-    const trainer = trainers[idx];
-    if (!trainer) return;
+  const handleVerifyTrainer = async (trainer) => {
+    const idx = getTrainerIndexInFullList(trainer);
+    if (idx === -1) return;
+    const trainerAtIdx = trainers[idx];
+    if (!trainerAtIdx) return;
 
     try {
       const updated = [...trainers];
       updated[idx] = {
-        ...trainer,
+        ...trainerAtIdx,
         verificationStatus: 'verified'
       };
       setTrainers(updated);
       
       toast({
         title: "Trainer Verified",
-        description: `${trainer.name} has been verified successfully.`,
+        description: `${trainerAtIdx.name} has been verified successfully.`,
         variant: "default"
       });
     } catch (error) {
@@ -1236,10 +1248,10 @@ const TrainerManagementPage = () => {
                       <Mail className="w-3 h-3 text-blue-600" />
                     )}
                   </Button>
-                  <Button onClick={() => openEditModal(idx)} variant="ghost" size="sm" className="h-6 w-6 p-0">
+                  <Button onClick={() => openEditModal(trainer)} variant="ghost" size="sm" className="h-6 w-6 p-0">
                     <Edit className="w-3 h-3" />
                   </Button>
-                  <Button onClick={() => handleDeleteClick(idx)} variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-600 hover:text-red-700" title="Delete trainer">
+                  <Button onClick={() => handleDeleteClick(trainer)} variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-600 hover:text-red-700" title="Delete trainer">
                     <Trash2 className="w-3 h-3" />
                   </Button>
                 </div>
@@ -1260,7 +1272,7 @@ const TrainerManagementPage = () => {
                         To Be Verified
                       </span>
                       <Button
-                        onClick={() => handleVerifyTrainer(idx)}
+                        onClick={() => handleVerifyTrainer(trainer)}
                         size="sm"
                         className="h-6 px-2 text-xs bg-green-600 hover:bg-green-700 text-white"
                         title="Verify this trainer"
