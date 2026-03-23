@@ -307,9 +307,9 @@ const TrainerMatrixView = React.memo(({
     const todayDate = parseLocalDate(todayStr);
     if (!todayDate) return { todayStr, training: [], nonTraining: [], leave: [], available: [] };
 
-    const training = [];
-    const nonTraining = [];
-    const leave = [];
+    const trainingByTrainer = new Map();
+    const nonTrainingByTrainer = new Map();
+    const leaveByTrainer = new Map();
     const assignedTrainerNames = new Set();
 
     (flattenedScheduleData || []).forEach((entry) => {
@@ -319,33 +319,41 @@ const TrainerMatrixView = React.memo(({
       if (!entryStart || !entryEnd) return;
       if (todayDate < entryStart || todayDate > entryEnd) return;
 
+      const name = (entry.trainer || '').trim();
+      // Use trimmed name for display and sort so names fixed in Trainer Accounts (e.g. leading space removed) sort correctly
+      const item = { trainerName: name, ...entry };
+
       // Skip "Not Alloted" placeholders for training
       if (entry.type === 'training') {
         if (entry.client === 'Not Alloted' || entry.course === 'Not Alloted' || entry.role === 'Not Alloted') return;
-        assignedTrainerNames.add(entry.trainer);
-        training.push({ trainerName: entry.trainer, ...entry });
+        assignedTrainerNames.add(name);
+        if (!trainingByTrainer.has(name)) trainingByTrainer.set(name, item);
         return;
       }
       if (entry.type === 'non-training') {
-        assignedTrainerNames.add(entry.trainer);
-        nonTraining.push({ trainerName: entry.trainer, ...entry });
+        assignedTrainerNames.add(name);
+        if (!nonTrainingByTrainer.has(name)) nonTrainingByTrainer.set(name, item);
         return;
       }
       if (entry.type === 'leave') {
-        assignedTrainerNames.add(entry.trainer);
-        leave.push({ trainerName: entry.trainer, ...entry });
+        assignedTrainerNames.add(name);
+        if (!leaveByTrainer.has(name)) leaveByTrainer.set(name, item);
       }
     });
 
-    const available = (trainers || []).filter((t) => !assignedTrainerNames.has(t.name)).map((t) => ({ trainerName: t.name, trainer: t }));
+    const available = (trainers || []).filter((t) => !assignedTrainerNames.has((t.name || '').trim())).map((t) => ({ trainerName: (t.name || '').trim(), trainer: t }));
 
-    const sortByName = (a, b) => (a.trainerName || '').localeCompare(b.trainerName || '', undefined, { sensitivity: 'base' });
+    const sortByName = (a, b) => (a.trainerName || '').trim().localeCompare((b.trainerName || '').trim(), undefined, { sensitivity: 'base' });
+    const training = Array.from(trainingByTrainer.values()).sort(sortByName);
+    const nonTraining = Array.from(nonTrainingByTrainer.values()).sort(sortByName);
+    const leave = Array.from(leaveByTrainer.values()).sort(sortByName);
+
     return {
       todayStr,
       todayFormatted: todayStr ? `${todayStr.slice(8, 10)}/${todayStr.slice(5, 7)}/${todayStr.slice(0, 4)}` : '',
-      training: training.sort(sortByName),
-      nonTraining: nonTraining.sort(sortByName),
-      leave: leave.sort(sortByName),
+      training,
+      nonTraining,
+      leave,
       available: available.sort(sortByName),
     };
   }, [flattenedScheduleData, trainers]);
@@ -1486,7 +1494,10 @@ const TrainerMatrixView = React.memo(({
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100 transition-colors"
         >
           <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.training} shadow-sm`} />
-          {STATUS_LABELS.training}
+          <span>{STATUS_LABELS.training}</span>
+          <span className="ml-1 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-800">
+            {todayCategoryDetails.training.length}
+          </span>
         </button>
         <button
           type="button"
@@ -1494,7 +1505,10 @@ const TrainerMatrixView = React.memo(({
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-orange-200 bg-orange-50 text-orange-800 hover:bg-orange-100 transition-colors"
         >
           <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.nonTraining} shadow-sm`} />
-          {STATUS_LABELS.nonTraining}
+          <span>{STATUS_LABELS.nonTraining}</span>
+          <span className="ml-1 inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-[11px] font-semibold text-orange-800">
+            {todayCategoryDetails.nonTraining.length}
+          </span>
         </button>
         <button
           type="button"
@@ -1502,7 +1516,10 @@ const TrainerMatrixView = React.memo(({
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-red-200 bg-red-50 text-red-800 hover:bg-red-100 transition-colors"
         >
           <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.leave} shadow-sm`} />
-          {STATUS_LABELS.leave}
+          <span>{STATUS_LABELS.leave}</span>
+          <span className="ml-1 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-800">
+            {todayCategoryDetails.leave.length}
+          </span>
         </button>
         <button
           type="button"
@@ -1510,7 +1527,10 @@ const TrainerMatrixView = React.memo(({
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-green-200 bg-green-50 text-green-800 hover:bg-green-100 transition-colors"
         >
           <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.none} shadow-sm`} />
-          {STATUS_LABELS.none}
+          <span>{STATUS_LABELS.none}</span>
+          <span className="ml-1 inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-800">
+            {todayCategoryDetails.available.length}
+          </span>
         </button>
         <div className="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600">
           <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.holiday} shadow-sm`} />
@@ -1577,10 +1597,30 @@ const TrainerMatrixView = React.memo(({
               {categoryDetailModal === 'none' && `${STATUS_LABELS.none} — Today (${todayCategoryDetails.todayFormatted || todayCategoryDetails.todayStr})`}
             </DialogTitle>
             <DialogDescription>
-              {categoryDetailModal === 'training' && 'Trainers with training assigned today.'}
-              {categoryDetailModal === 'nonTraining' && 'Trainers with non-training tasks today.'}
-              {categoryDetailModal === 'leave' && 'Trainers on leave today.'}
-              {categoryDetailModal === 'none' && 'Trainers with no assignment today.'}
+              {categoryDetailModal === 'training' && (
+                <>
+                  Trainers with training assigned today.{' '}
+                  <span className="text-base font-semibold text-slate-900">Total: {todayCategoryDetails.training.length}</span>
+                </>
+              )}
+              {categoryDetailModal === 'nonTraining' && (
+                <>
+                  Trainers with non-training tasks today.{' '}
+                  <span className="text-base font-semibold text-slate-900">Total: {todayCategoryDetails.nonTraining.length}</span>
+                </>
+              )}
+              {categoryDetailModal === 'leave' && (
+                <>
+                  Trainers on leave today.{' '}
+                  <span className="text-base font-semibold text-slate-900">Total: {todayCategoryDetails.leave.length}</span>
+                </>
+              )}
+              {categoryDetailModal === 'none' && (
+                <>
+                  Trainers with no assignment today.{' '}
+                  <span className="text-base font-semibold text-slate-900">Total: {todayCategoryDetails.available.length}</span>
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="mt-2">
@@ -1597,6 +1637,7 @@ const TrainerMatrixView = React.memo(({
           </div>
           <div className="flex-1 overflow-y-auto min-h-0 mt-2">
             {categoryDetailModal === 'training' && (() => {
+              const total = todayCategoryDetails.training.length;
               const list = todayCategoryDetails.training.filter((item) => {
                 const term = categoryDetailSearch.trim().toLowerCase();
                 if (!term) return true;
@@ -1607,9 +1648,13 @@ const TrainerMatrixView = React.memo(({
                 return name.includes(term) || client.includes(term) || course.includes(term) || role.includes(term);
               });
               return list.length === 0 ? (
-                <p className="text-sm text-slate-500 py-4">{todayCategoryDetails.training.length === 0 ? 'No training assigned for today.' : 'No matches for your search.'}</p>
+                <p className="text-sm text-slate-500 py-4">{total === 0 ? 'No training assigned for today.' : 'No matches for your search.'}</p>
               ) : (
-                <ul className="space-y-3">
+                <>
+                  {categoryDetailSearch.trim() && (
+                    <p className="text-xs text-slate-500 mb-2">Showing {list.length} of {total}</p>
+                  )}
+                  <ul className="space-y-3">
                   {list.map((item, idx) => (
                     <li key={idx} className="p-3 rounded-lg border border-slate-200 bg-slate-50/50">
                       <div className="font-medium text-slate-900">{item.trainerName}</div>
@@ -1621,9 +1666,11 @@ const TrainerMatrixView = React.memo(({
                     </li>
                   ))}
                 </ul>
+                </>
               );
             })()}
             {categoryDetailModal === 'nonTraining' && (() => {
+              const total = todayCategoryDetails.nonTraining.length;
               const list = todayCategoryDetails.nonTraining.filter((item) => {
                 const term = categoryDetailSearch.trim().toLowerCase();
                 if (!term) return true;
@@ -1634,9 +1681,13 @@ const TrainerMatrixView = React.memo(({
                 return name.includes(term) || task.includes(term) || type.includes(term) || desc.includes(term);
               });
               return list.length === 0 ? (
-                <p className="text-sm text-slate-500 py-4">{todayCategoryDetails.nonTraining.length === 0 ? 'No non-training tasks for today.' : 'No matches for your search.'}</p>
+                <p className="text-sm text-slate-500 py-4">{total === 0 ? 'No non-training tasks for today.' : 'No matches for your search.'}</p>
               ) : (
-                <ul className="space-y-3">
+                <>
+                  {categoryDetailSearch.trim() && (
+                    <p className="text-xs text-slate-500 mb-2">Showing {list.length} of {total}</p>
+                  )}
+                  <ul className="space-y-3">
                   {list.map((item, idx) => (
                     <li key={idx} className="p-3 rounded-lg border border-slate-200 bg-orange-50/30">
                       <div className="font-medium text-slate-900">{item.trainerName}</div>
@@ -1648,9 +1699,11 @@ const TrainerMatrixView = React.memo(({
                     </li>
                   ))}
                 </ul>
+                </>
               );
             })()}
             {categoryDetailModal === 'leave' && (() => {
+              const total = todayCategoryDetails.leave.length;
               const list = todayCategoryDetails.leave.filter((item) => {
                 const term = categoryDetailSearch.trim().toLowerCase();
                 if (!term) return true;
@@ -1659,9 +1712,13 @@ const TrainerMatrixView = React.memo(({
                 return name.includes(term) || desc.includes(term);
               });
               return list.length === 0 ? (
-                <p className="text-sm text-slate-500 py-4">{todayCategoryDetails.leave.length === 0 ? 'No leave for today.' : 'No matches for your search.'}</p>
+                <p className="text-sm text-slate-500 py-4">{total === 0 ? 'No leave for today.' : 'No matches for your search.'}</p>
               ) : (
-                <ul className="space-y-3">
+                <>
+                  {categoryDetailSearch.trim() && (
+                    <p className="text-xs text-slate-500 mb-2">Showing {list.length} of {total}</p>
+                  )}
+                  <ul className="space-y-3">
                   {list.map((item, idx) => (
                     <li key={idx} className="p-3 rounded-lg border border-slate-200 bg-red-50/30">
                       <div className="font-medium text-slate-900">{item.trainerName}</div>
@@ -1669,9 +1726,11 @@ const TrainerMatrixView = React.memo(({
                     </li>
                   ))}
                 </ul>
+                </>
               );
             })()}
             {categoryDetailModal === 'none' && (() => {
+              const total = todayCategoryDetails.available.length;
               const list = todayCategoryDetails.available.filter((item) => {
                 const term = categoryDetailSearch.trim().toLowerCase();
                 if (!term) return true;
@@ -1680,9 +1739,13 @@ const TrainerMatrixView = React.memo(({
                 return name.includes(term) || spec.includes(term);
               });
               return list.length === 0 ? (
-                <p className="text-sm text-slate-500 py-4">{todayCategoryDetails.available.length === 0 ? 'No available trainers for today.' : 'No matches for your search.'}</p>
+                <p className="text-sm text-slate-500 py-4">{total === 0 ? 'No available trainers for today.' : 'No matches for your search.'}</p>
               ) : (
-                <ul className="space-y-2">
+                <>
+                  {categoryDetailSearch.trim() && (
+                    <p className="text-xs text-slate-500 mb-2">Showing {list.length} of {total}</p>
+                  )}
+                  <ul className="space-y-2">
                   {list.map((item, idx) => (
                     <li key={idx} className="p-3 rounded-lg border border-slate-200 bg-green-50/30 flex items-center justify-between">
                       <span className="font-medium text-slate-900">{item.trainerName}</span>
@@ -1692,6 +1755,7 @@ const TrainerMatrixView = React.memo(({
                     </li>
                   ))}
                 </ul>
+                </>
               );
             })()}
           </div>

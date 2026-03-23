@@ -28,7 +28,7 @@ const OnboardingForm = ({ user, onComplete, skipOnboarding = false }) => {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         if (userDoc.exists()) {
           const userData = userDoc.data();
-          const trainerName = userData.displayName || userData.name || user?.displayName || '';
+          const trainerName = (userData.displayName || userData.name || user?.displayName || '').trim();
 
           setForm(prev => ({
             ...prev,
@@ -38,7 +38,7 @@ const OnboardingForm = ({ user, onComplete, skipOnboarding = false }) => {
           // Fallback to user.displayName from auth
           setForm(prev => ({
             ...prev,
-            name: user?.displayName || ''
+            name: (user?.displayName || '').trim()
           }));
         }
       } catch (error) {
@@ -46,7 +46,7 @@ const OnboardingForm = ({ user, onComplete, skipOnboarding = false }) => {
         // Fallback to user.displayName from auth
         setForm(prev => ({
           ...prev,
-          name: user?.displayName || ''
+          name: (user?.displayName || '').trim()
         }));
       } finally {
         setLoadingName(false);
@@ -77,8 +77,8 @@ const OnboardingForm = ({ user, onComplete, skipOnboarding = false }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    // Validation
-    if (!form.name || !form.email || !form.phone || !form.specialization || !form.employeeId) {
+    const trimmedName = (form.name || '').trim();
+    if (!trimmedName || !form.email || !form.phone || !form.specialization || !form.employeeId) {
       toast({
         title: 'Missing Information',
         description: 'Please fill in all required fields',
@@ -99,7 +99,7 @@ const OnboardingForm = ({ user, onComplete, skipOnboarding = false }) => {
       const trainers = await loadTrainerData();
       const newTrainer = {
         id: trainerId,
-        name: form.name,
+        name: trimmedName,
         email: form.email,
         employeeId: form.employeeId,
         phone: form.phone,
@@ -120,7 +120,7 @@ const OnboardingForm = ({ user, onComplete, skipOnboarding = false }) => {
         trainerId: user.uid,
         trainerAccountId: trainerId,
         details: {
-          name: form.name,
+          name: trimmedName,
           email: form.email,
           employeeId: form.employeeId,
           phone: form.phone,
@@ -140,7 +140,7 @@ const OnboardingForm = ({ user, onComplete, skipOnboarding = false }) => {
       await setDoc(userRef, {
         onboardingStatus: 'approved', // Set to approved immediately
         trainerAccountId: trainerId,
-        displayName: form.name
+        displayName: trimmedName
       }, { merge: true });
 
       // Wait a moment for Firestore to sync

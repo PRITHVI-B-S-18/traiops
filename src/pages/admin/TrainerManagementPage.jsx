@@ -241,6 +241,7 @@ const TrainerManagementPage = () => {
     const filteredSpec = getFilteredSpecialization(t.specialization);
     setForm({
       ...t,
+      name: (t.name || '').trim(),
       category: t.category || 'Internal',
       experience: (t.experience || []).map((e) => ({ ...e })),
       specialization: filteredSpec
@@ -428,6 +429,7 @@ const TrainerManagementPage = () => {
     const filteredSpec = getFilteredSpecialization(form.specialization);
     const normalizedForm = {
       ...form,
+      name: (form.name || '').trim(),
       category: form.category || 'Internal',
       specialization: filteredSpec
     };
@@ -796,7 +798,7 @@ const TrainerManagementPage = () => {
         status: row['Active Status'] || 'Active',
         category: row['Category'] || 'Internal',
         id: row['Employee ID'] ? String(row['Employee ID']).trim() : '',
-        name: row["Trainer's Name"] || '-',
+        name: (row["Trainer's Name"] || '').trim() || '-',
         email: row['Email ID'] || '-',
         phone: row['Phone Number'] || '-',
         specialization: row['Tech Stack'] || '-',

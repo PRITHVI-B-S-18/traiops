@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { BarChart3, Filter, Users, Layers, Calendar } from 'lucide-react';
 import { subscribeToScheduleUpdates } from '@/utils/firestoreSchedule';
-import { compareDateStrings, convertToUTC, formatDateForDisplay, isValidDateString, getDatesInRange as getDatesInRangeTZ } from '@/utils/timezoneUtils';
+import { compareDateStrings, convertToUTC, formatDateForDisplay, isValidDateString, getDatesInRange as getDatesInRangeTZ, getCurrentDateInUserTimezone } from '@/utils/timezoneUtils';
 import { LoadingSkeleton } from '@/components/ui/loading-skeletons';
 import { cn } from '@/lib/utils';
 import { cardStyles, cardPadding } from '@/styles/designSystem';
@@ -117,8 +117,7 @@ const AssignmentsDashboardPage = () => {
   const [techStacks, setTechStacks] = useState([]);
 
   const todayString = useMemo(() => {
-    const today = new Date();
-    return today.toISOString().slice(0, 10);
+    return getCurrentDateInUserTimezone();
   }, []);
 
   useEffect(() => {
@@ -332,18 +331,59 @@ const AssignmentsDashboardPage = () => {
     const clientMap = {};
     const trainerMap = {};
     const techMap = {};
-    const typeCounts = { training: 0, 'non-training': 0, leave: 0 };
+    const trainingTrainers = new Set();
+    const nonTrainingTrainers = new Set();
+    const leaveTrainers = new Set();
+    const assignedTrainers = new Set();
+    const trainerDaySeen = new Set(); // `${trainerName}__${dateKey}`
+    let validAssignmentsTotal = 0;
 
     filteredEntries.forEach(entry => {
       const t = entry.type || 'training';
-      if (t === 'training' || t === 'non-training' || t === 'leave') {
-        typeCounts[t] += 1;
+      const trainerName = (entry.trainer || '').trim();
+      let isValidAssignment = false;
+
+      // Match Matrix rules: count unique trainers per type, trim names, and ignore placeholders
+      if (trainerName) {
+        if (t === 'training') {
+          const isPlaceholder =
+            entry.client === 'Not Alloted' ||
+            entry.course === 'Not Alloted' ||
+            entry.role === 'Not Alloted';
+          if (!isPlaceholder) {
+            trainingTrainers.add(trainerName);
+            assignedTrainers.add(trainerName);
+            validAssignmentsTotal += 1;
+            isValidAssignment = true;
+          }
+        } else if (t === 'non-training') {
+          const isPlaceholder = !entry.taskDetails || entry.taskDetails === 'Not Alloted';
+          if (!isPlaceholder) {
+            nonTrainingTrainers.add(trainerName);
+            assignedTrainers.add(trainerName);
+            validAssignmentsTotal += 1;
+            isValidAssignment = true;
+          }
+        } else if (t === 'leave') {
+          leaveTrainers.add(trainerName);
+          assignedTrainers.add(trainerName);
+          validAssignmentsTotal += 1;
+          isValidAssignment = true;
+        }
       }
+
       if (entry.client && entry.client !== 'Not Alloted') {
         clientMap[entry.client] = (clientMap[entry.client] || 0) + 1;
       }
-      if (entry.trainer) {
-        trainerMap[entry.trainer] = (trainerMap[entry.trainer] || 0) + 1;
+      // Top trainers should not double-count the same trainer on the same day.
+      // This also removes inflation from duplicate schedule rows and fixes issues caused by leading spaces.
+      if (isValidAssignment && trainerName) {
+        const dateKey = entry.dateKey || entry.startDate || '';
+        const trainerDayKey = `${trainerName}__${dateKey}`;
+        if (!trainerDaySeen.has(trainerDayKey)) {
+          trainerDaySeen.add(trainerDayKey);
+          trainerMap[trainerName] = (trainerMap[trainerName] || 0) + 1;
+        }
       }
       const stack = entry.techStack || entry.specialization || entry.skill;
       if (stack) {
@@ -362,8 +402,15 @@ const AssignmentsDashboardPage = () => {
         .map(([label, count]) => ({ label, count }));
 
     return {
-      total: filteredEntries.length,
-      typeCounts,
+      // Big "Assignments" number should be unique assigned trainers (matches breakdown expectations)
+      total: assignedTrainers.size,
+      totalRaw: filteredEntries.length,
+      totalValidRows: validAssignmentsTotal,
+      typeCounts: {
+        training: trainingTrainers.size,
+        'non-training': nonTrainingTrainers.size,
+        leave: leaveTrainers.size,
+      },
       uniqueClients: Object.keys(clientMap).length,
       uniqueTrainers: Object.keys(trainerMap).length,
       uniqueTechStacks: Object.keys(techMap).length,
@@ -611,6 +658,11 @@ const AssignmentsDashboardPage = () => {
           <p className="text-xs text-slate-600 mt-1">
             Training {summaryCounts.typeCounts.training}, Non-training {summaryCounts.typeCounts['non-training']}, Leave {summaryCounts.typeCounts.leave}
           </p>
+          {summaryCounts.totalRaw !== summaryCounts.totalValidRows && (
+            <p className="text-[11px] text-slate-500 mt-1">
+              {summaryCounts.totalRaw} total rows ({summaryCounts.totalValidRows} valid)
+            </p>
+          )}
           <p className="text-xs text-slate-500 mt-0.5">
             {startDate === todayString && endDate === todayString ? 'Defaulting to today' : `${formatDateForDisplay(startDate)} – ${formatDateForDisplay(endDate)}`}
           </p>
