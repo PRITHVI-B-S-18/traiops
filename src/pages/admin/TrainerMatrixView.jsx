@@ -1493,9 +1493,9 @@ const TrainerMatrixView = React.memo(({
           onClick={() => setCategoryDetailModal('training')}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100 transition-colors"
         >
-          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.training} shadow-sm`} />
+          <span className={`inline-block w-4 h-4 rounded-full ${STATUS_COLORS.training} shadow-sm`} />
           <span>{STATUS_LABELS.training}</span>
-          <span className="ml-1 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-800">
+          <span className="ml-1 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-sm font-semibold text-blue-800">
             {todayCategoryDetails.training.length}
           </span>
         </button>
@@ -1504,9 +1504,9 @@ const TrainerMatrixView = React.memo(({
           onClick={() => setCategoryDetailModal('nonTraining')}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-orange-200 bg-orange-50 text-orange-800 hover:bg-orange-100 transition-colors"
         >
-          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.nonTraining} shadow-sm`} />
+          <span className={`inline-block w-4 h-4 rounded-full ${STATUS_COLORS.nonTraining} shadow-sm`} />
           <span>{STATUS_LABELS.nonTraining}</span>
-          <span className="ml-1 inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-[11px] font-semibold text-orange-800">
+          <span className="ml-1 inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-sm font-semibold text-orange-800">
             {todayCategoryDetails.nonTraining.length}
           </span>
         </button>
@@ -1515,9 +1515,9 @@ const TrainerMatrixView = React.memo(({
           onClick={() => setCategoryDetailModal('leave')}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-red-200 bg-red-50 text-red-800 hover:bg-red-100 transition-colors"
         >
-          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.leave} shadow-sm`} />
+          <span className={`inline-block w-4 h-4 rounded-full ${STATUS_COLORS.leave} shadow-sm`} />
           <span>{STATUS_LABELS.leave}</span>
-          <span className="ml-1 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-800">
+          <span className="ml-1 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-sm font-semibold text-red-800">
             {todayCategoryDetails.leave.length}
           </span>
         </button>
@@ -1526,9 +1526,9 @@ const TrainerMatrixView = React.memo(({
           onClick={() => setCategoryDetailModal('none')}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium border border-green-200 bg-green-50 text-green-800 hover:bg-green-100 transition-colors"
         >
-          <span className={`inline-block w-5 h-5 rounded-full ${STATUS_COLORS.none} shadow-sm`} />
+          <span className={`inline-block w-4 h-4 rounded-full ${STATUS_COLORS.none} shadow-sm`} />
           <span>{STATUS_LABELS.none}</span>
-          <span className="ml-1 inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-[11px] font-semibold text-green-800">
+          <span className="ml-1 inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-sm font-semibold text-green-800">
             {todayCategoryDetails.available.length}
           </span>
         </button>
