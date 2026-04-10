@@ -39,9 +39,12 @@ import TaskDetailsModal from '@/components/trainer/TaskDetailsModal';
 import TrainerCalendar from '@/components/trainer/TrainerCalendar';
 import UpcomingTasksView from '@/components/trainer/UpcomingTasksView';
 import LocationPermissionModal from '@/components/trainer/LocationPermissionModal';
+import OnboardingForm from '@/components/trainer/OnboardingForm';
 import { cardStyles, cardPadding } from '@/styles/designSystem';
 import { LoadingSkeleton } from '@/components/ui/loading-skeletons';
 import { formatDateForDisplay } from '@/utils/timezoneUtils';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '@/firebase';
 
 const TrainerHomePage = () => {
   const { user } = useAuth();
@@ -71,9 +74,70 @@ const TrainerHomePage = () => {
   const [clockStatus, setClockStatus] = useState({});
   const [selectedTaskDate, setSelectedTaskDate] = useState(null);
   const [selectedTaskList, setSelectedTaskList] = useState([]);
+  const [checkingOnboarding, setCheckingOnboarding] = useState(true);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const [skipOnboarding, setSkipOnboarding] = useState(false);
 
   const latestSchedulesRef = useRef({});
   const trainerNameRef = useRef('');
+
+  // Keep onboarding behavior consistent with Overall Schedule page
+  useEffect(() => {
+    let isMounted = true;
+
+    const checkOnboarding = async () => {
+      if (!user?.uid || !user?.email) {
+        if (isMounted) setCheckingOnboarding(false);
+        return;
+      }
+
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (!isMounted) return;
+
+        if (userDoc.exists()) {
+          const userData = userDoc.data() || {};
+          const status = userData.onboardingStatus;
+
+          if (status === 'not_started' || status === 'rejected') {
+            const trainers = await loadTrainerData();
+            if (!isMounted) return;
+            const trainer = (trainers || []).find(
+              (t) => (t.email || '').trim().toLowerCase() === user.email.trim().toLowerCase()
+            );
+            setNeedsOnboarding(true);
+            setSkipOnboarding(!!trainer);
+            setCheckingOnboarding(false);
+            return;
+          }
+
+          // approved/pending/legacy users proceed to home
+          setNeedsOnboarding(false);
+          setSkipOnboarding(false);
+          setCheckingOnboarding(false);
+          return;
+        }
+
+        // No user doc: if not in trainers collection, require onboarding
+        const trainers = await loadTrainerData();
+        if (!isMounted) return;
+        const trainer = (trainers || []).find(
+          (t) => (t.email || '').trim().toLowerCase() === user.email.trim().toLowerCase()
+        );
+        setNeedsOnboarding(!trainer);
+        setSkipOnboarding(false);
+      } catch (error) {
+        console.error('Error checking trainer onboarding on home:', error);
+      } finally {
+        if (isMounted) setCheckingOnboarding(false);
+      }
+    };
+
+    checkOnboarding();
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.uid, user?.email]);
 
   // Get today's date in YYYY-MM-DD format
   const getTodayDateStr = () => {
@@ -136,6 +200,13 @@ const TrainerHomePage = () => {
       setLoading(false);
     }
   }, [trainerName, allSchedules]);
+
+  // Prevent indefinite skeleton on Home when onboarding is complete but no trainer mapping is available yet.
+  useEffect(() => {
+    if (!checkingOnboarding && !needsOnboarding && loading && !trainerName) {
+      setLoading(false);
+    }
+  }, [checkingOnboarding, needsOnboarding, loading, trainerName]);
 
   // Real-time clock status listener
   useEffect(() => {
@@ -503,7 +574,15 @@ const TrainerHomePage = () => {
     }
   };
 
-  if (loading) {
+  const handleOnboardingComplete = () => {
+    window.location.reload();
+  };
+
+  if (needsOnboarding) {
+    return <OnboardingForm user={user} onComplete={handleOnboardingComplete} skipOnboarding={skipOnboarding} />;
+  }
+
+  if (checkingOnboarding || loading) {
     return <LoadingSkeleton message="Loading today's tasks..." className="h-[60vh]" />;
   }
 

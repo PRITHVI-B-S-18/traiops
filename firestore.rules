@@ -36,13 +36,17 @@ service cloud.firestore {
     
     // Users collection
     match /users/{userId} {
-      // Allow all authenticated active users to read user documents
+      // Allow users to read their own user document (needed during invitation signup/login bootstrap)
+      // and allow active users to read user docs for role-based workflows.
       // This is needed for:
       // 1. Role-based queries (getUsersByRole) used in clock request notifications
       // 2. Program managers managing their assigned trainers
       // 3. Routing clock requests to PMs and sending email notifications
       // Note: User documents typically only contain non-sensitive data (email, displayName, role, status)
-      allow read: if request.auth != null && isUserActive();
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        isUserActive()
+      );
       
       // Allow a user to create their own document (invitation signup / first-time account creation)
       // Allow admins to create any user document (e.g. legacy create-user flow)
@@ -201,7 +205,8 @@ service cloud.firestore {
 
     // Settings collection (e.g., tech stacks)
     match /settings/{settingId} {
-      allow read: if isAdmin() && isUserActive();
+      // Trainers and PMs also need to read global settings like managed tech stacks.
+      allow read: if request.auth != null && isUserActive();
       allow write: if isAdmin() && isUserActive();
     }
     
